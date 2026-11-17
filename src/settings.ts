@@ -1,12 +1,17 @@
+import type { CameraFacing } from './camera';
+
 export type FillId = 'migan' | 'telea' | 'stylised';
 export type StyleVariant = 'void' | 'flat' | 'blur';
-export type DetectorModel = 'yolo11n-seg' | 'yolo11s-seg';
+/** The -320 models take 320×320 input instead of 640×640: about 4× faster, but miss small phones. */
+export type DetectorModel = 'yolo11s-seg' | 'yolo11n-seg' | 'yolo11s-seg-320' | 'yolo11n-seg-320';
 
 export interface Settings {
   fill: FillId;
   /** Variant used when fill === 'stylised'. */
   style: StyleVariant;
   detector: DetectorModel;
+  /** Which camera to ask for (only matters on a tablet or phone). */
+  camera: CameraFacing;
   mirror: boolean;
   /** Fill the screen (crops the 4:3 camera image) instead of letterboxing it. */
   cover: boolean;
@@ -18,6 +23,14 @@ export interface Settings {
   syncDisplay: boolean;
   /** Minimum score for a new phone detection. */
   confidence: number;
+  /** Only count something as a phone if "cell phone" is the model's best guess for it. */
+  topClassOnly: boolean;
+  /**
+   * A phone already found may continue at a lower score (down to half the threshold), but only
+   * for this long (ms) after it last scored at or above the full threshold. Then it has to be
+   * confirmed again, so a look-alike that once scored high does not stay "a phone" for good.
+   */
+  reconfirmMs: number;
   /** Grow the phone mask by this many px. */
   dilate: number;
   /** Width in px of the soft edge beyond the dilated mask. */
@@ -36,12 +49,15 @@ export const DEFAULTS: Settings = {
   fill: 'migan',
   style: 'blur',
   detector: 'yolo11s-seg',
+  camera: 'front',
   mirror: true,
   cover: true,
   showMask: false,
   syncDisplay: false,
-  confidence: 0.25,
-  dilate: 12,
+  confidence: 0.7,
+  topClassOnly: true,
+  reconfirmMs: 1500,
+  dilate: 0,
   feather: 8,
   holdFrames: 5,
   persistMs: 150,

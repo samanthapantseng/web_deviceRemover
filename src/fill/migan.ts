@@ -7,7 +7,7 @@
 //   result  uint8 [N, 3, H, W]   RGB; pixels where mask == 255 come back unchanged
 // The graph resizes to 512×512 internally, so the generator costs the same whatever we feed it.
 // We always feed exactly 512×512: fixed shapes keep the GPU pipelines cached.
-import { createSession, exclusive, feedData, fetchModel, modelUrl, ort, type Backend } from '../runtime/ort';
+import { createSession, fetchModel, modelUrl, type Backend, type Model } from '../runtime/ort';
 import { makeCanvas } from '../types';
 import { sampleHole, type Fill, type FillJob } from './types';
 
@@ -19,7 +19,7 @@ export class MiganFill implements Fill {
   // Measured on test frames: with the hole filling a third of the window MI-GAN invents
   // objects in the hand; once the hole is under ~15 % of the window it continues the background.
   readonly context = 2.6;
-  private session!: ort.InferenceSession;
+  private model!: Model;
   private be: Backend | 'not loaded' = 'not loaded';
   private inp = makeCanvas(S, S, true);
   private out = makeCanvas(S, S, true);
@@ -33,20 +33,18 @@ export class MiganFill implements Fill {
 
   async init(onProgress?: (fraction: number) => void): Promise<void> {
     const bytes = await fetchModel(modelUrl('migan.onnx'), onProgress);
-    const loaded = await createSession(bytes, { freeDims: { batch_size: 1, height: S, width: S } });
-    this.session = loaded.session;
-    this.be = loaded.backend;
+    this.model = await createSession(bytes, { freeDims: { batch_size: 1, height: S, width: S } });
+    this.be = this.model.backend;
     this.mask.fill(255);
     this.mask.fill(0, (S * S) / 2 - S * 32, (S * S) / 2 + S * 32);
     await this.infer(); // warm-up: compiles shaders
   }
 
   private async infer(): Promise<Uint8Array> {
-    const feeds = {
-      image: new ort.Tensor('uint8', feedData(this.image), [1, 3, S, S]),
-      mask: new ort.Tensor('uint8', feedData(this.mask), [1, 1, S, S]),
-    };
-    const res = await exclusive(() => this.session.run(feeds));
+    const res = await this.model.run({
+      image: { data: this.image, dims: [1, 3, S, S] },
+      mask: { data: this.mask, dims: [1, 1, S, S] },
+    });
     return res.result.data as Uint8Array;
   }
 

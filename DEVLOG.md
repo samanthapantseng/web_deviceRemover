@@ -133,3 +133,195 @@ it comes back.
 1. Real webcam: still test, then the live view, with the phone's back to the camera.
 2. Decide on finger handling after seeing real frames.
 3. Later modes (inflate, audio hijack) and background memory, as planned.
+
+## 2026-11-17 · session 3: running it on the iPad (test mode)
+
+Target: iPad Pro 12.9" (3rd generation, A12X, 2018), iPadOS 26.7.3, Safari. Same code, same
+repository; the Mac serves the files, Safari on the iPad does all the work.
+
+### What was added
+
+- **`npm run dev:ipad`**: the dev server on https, reachable from the network, port 8443 (next
+  to the plain `npm run dev` on 5173, which is unchanged). Safari only allows the camera on
+  https, so this needs a certificate the iPad trusts.
+- **`scripts/make_cert.sh`**: a certificate authority for this Mac (made once, installed on the
+  iPad once) and a server certificate re-issued on every start for the Mac's Bonjour name
+  (`Samanthas-MacBook-Pro.local`) and current addresses, so a new network needs no reinstall.
+  The authority is limited (name constraints) to `.local`, `localhost` and private addresses.
+  Keys are kept outside the project folder.
+- **Touch**: double-tap opens the panel; the panel has Snapshot / Fullscreen / Close buttons and
+  bigger controls on touch screens. Front / back camera choice. Screen kept awake. Turning the
+  iPad restarts the page in the new orientation.
+- **Remote report**: in iPad mode the page sends timings, errors and status (no images) to the
+  Mac's terminal and `captures/device-report.jsonl`, so a run on the iPad can be read on the Mac.
+
+### Verified (on the Mac, not on the iPad)
+
+- Apple's own certificate check (`security verify-cert`, the same trust code as iOS) accepts
+  the certificate for the `.local` name and the IP, and rejects a certificate for
+  www.google.com signed by the same authority (name constraints enforced).
+- `curl` over the `.local` name with only this authority trusted: page, models and onnxruntime
+  load over HTTP/2 with the isolation headers. Without the authority: refused.
+- From a network address, test stills in `captures/` and the certificate keys are refused
+  (403); from the Mac itself the stills still load for the test pages.
+- Headless Chrome over https on the `.local` name: same numbers as before (MI-GAN 14 fps, Telea
+  28.6, stylised 31.1, display 60). With an iPad Safari user agent, touch screen and a 480×640
+  portrait frame: double-tap, panel buttons, 16 px controls, phone found (0.97), MI-GAN 13 fps.
+- The still-test capture through the iPad server lands in `captures/` on the Mac, and its
+  timings arrive in the report.
+- The plain `npm run dev` and the production build are unchanged; the reporter is not in the
+  build.
+
+### What failed, and the fix
+
+- **Port 5174 was taken.** Two `npm run dev` servers were running (VS Code and another
+  terminal); when the config changed, both restarted and one moved to 5174. Vite moves extra
+  servers to 5174, 5175…, so the iPad server uses 8443 instead.
+- **"display NaN fps"** (older bug): two screen frames with the same timestamp divided by zero
+  and the average stayed NaN. Now skipped.
+
+### First run on the real iPad
+
+The `.local` name did not load on the school network (Bonjour is probably blocked); the IP
+address did. Safari 26.6 on the A12X **has WebGPU** (shader-f16, workgroup storage 16 KB, 256
+invocations per workgroup, buffers up to 256 MB) and both models ran on it. Front camera
+640×480, display at 80 to 130 fps (120 Hz screen).
+
+But everything is 25 to 40 times slower than on the M2 Max:
+
+| | iPad Pro 2018, Safari | M2 Max, Chrome |
+|---|---|---|
+| detect, yolo11s-seg 640 | 520 to 1,100 ms | 23 ms |
+| MI-GAN | 220 to 550 ms | 45 ms |
+| Telea | about 110 ms | 9 ms |
+| fill updates | 0.7 to 1.7 per second | 14 to 30 per second |
+
+**The page died 10 to 20 s after all three fills had loaded**, four times, with no error
+reported. Safari reloads a page whose process was killed, which matches a second "hello" in
+the report each time. Most likely out of memory: MI-GAN and the detector on the GPU, OpenCV.js
+and onnxruntime's four CPU worker threads were all loaded together.
+
+Changes:
+
+- Fills load only when first used (stylised stands in meanwhile); the live view no longer
+  loads MI-GAN and OpenCV.js unless they are picked. The still test page still loads all three.
+- onnxruntime uses one CPU thread when WebGPU does the work (no change in speed on the Mac).
+- Light detectors: the same models exported for 320×320 input. The detector now reads its
+  input size from the model.
+
+Detectors on the moving test clip (Mac, raw detections per frame, threshold 0.25):
+
+| | input | inference | phone found | median score | longest gap |
+|---|---|---|---|---|---|
+| yolo11s-seg | 640 | 23.1 ms | 100 % | 0.87 | 0 |
+| yolo11n-seg | 640 | 13.8 ms | 58 % | 0.31 | 26 frames |
+| yolo11s-seg-320 | 320 | 12.8 ms | 100 % | 0.61 | 1 frame |
+| yolo11n-seg-320 | 320 | 11.5 ms | 11 % | 0 | 82 frames |
+
+`yolo11s-seg-320` is the one to try on the iPad: a quarter of the work of the default, and in
+this clip just as reliable (lower scores, but always above the threshold). The removal looked
+as clean as with the 640 model. On the Mac the GPU is not the bottleneck, so it is only 1.8×
+faster there; on the iPad, where it is, a gain closer to 4× is expected, i.e. roughly 150 to
+250 ms per detection. That is still only 3 to 5 fill updates a second: below the 8 to 10
+aimed for.
+
+### Second iPad run, and the memory leak
+
+On the second run only the detector and Telea were loaded (lazy loading worked; Telea took 11
+to 45 ms), but the detector was still the 640 one, and the page still restarted after about
+45 s, then again after about 15 s. So it was not only MI-GAN's memory.
+
+Safari on the Mac (26.6.2) shows the same thing and can be measured (`footprint` on its page
+process, the page running on a still image with `?src=`):
+
+- Safari, models on WebGPU: memory grows by 100 to 150 MB a second, 2 GB → 7 GB in 30 s, and is
+  never given back. It stops growing when processing stops.
+- Safari, models on the CPU (`?backend=wasm`): flat at about 1 GB.
+- Chrome, same page: flat (about 1.1 GB).
+
+So it is Safari plus onnxruntime's WebGPU path. Every browser on the iPad uses Safari's engine,
+so another browser there would not help. The iPad has a few GB, which explains a crash within a
+minute.
+
+Tried, not solved:
+
+- Keeping model inputs and outputs in GPU buffers we own and reuse (`src/runtime/gpuIO.ts`).
+- Telling onnxruntime to reuse all its GPU buffers (`storageBufferCacheMode` etc. 'simple').
+- One run with both looked flat, but a control run of the same setup later leaked too, so that
+  run was probably not processing at all. Both are kept as opt-in experiments (`?gpuio=1`,
+  `?cache=simple`); the default is unchanged.
+- Skipping the erase effect and the mask canvas did not stop the growth either, which points
+  further at onnxruntime's WebGPU path in Safari.
+
+Added for testing: `?fill=`, `?runFor=` (stop after N s), `?report` (reporting on the plain dev
+server too), and onnxruntime's WebAssembly memory size in the reports.
+
+Careful: every Safari leak test leaves a tab holding gigabytes until it is closed; after a dozen
+the Mac had 40 GB in swap and the Chrome check ran 40 % slower.
+
+### Rectangles taken for phones: top-category check
+
+Report from the user: holding anything roughly rectangular made it count as a phone.
+
+How detection worked: YOLO11s-seg scores every region of the image for all 80 COCO categories,
+each score on its own (they do not share out to 1). We only read the "cell phone" score and
+took anything at 0.25 or more (0.125 near a phone already found). So a book scoring "book 0.8,
+cell phone 0.3" counted as a phone.
+
+Change: a region only counts as a phone if "cell phone" is its highest score of all 80
+(panel: "Phone must be the top category", on by default; `&top=0` on the still page turns it
+off). Overlapping regions are now decided once per object by their strongest reading, so a
+neighbouring region of the same book that happens to say "phone" cannot slip through. What was
+turned away shows in the panel ("not phone: book 0.80 (phone 0.31)") and as cyan boxes on the
+still page.
+
+Checked on the stock photos and the moving clip: every real phone still found with the same
+score; their next-best category scored at most 0.03. Phone found in 100 % of clip frames with
+the check on and off; post-processing 0.22 ms either way.
+
+For measuring: the still page now has a field for what is being held (saved as
+`still-<time>-<label>.png`), and `npm run stills` lists, for every capture, the phone score with
+and without the check and what the model really thinks a turned-away object is. Not yet run on
+real look-alike objects; that needs captures from the user.
+
+### First real-camera measurements, new defaults, re-confirmation
+
+The user's webcam captures (`npm run stills`): real phone, screen to camera 0.94; black wallet
+held upright like a phone **0.90**; the same wallet flat or at the frame edge, a pencil case and
+an empty hand: nothing; a book (Augé, *Non-Places*): turned away by the top-category check
+("laptop 0.50" beats phone 0.26). So the upright wallet cannot be separated from a phone by any
+threshold. To this model a dark rounded rectangle in fingers is a phone, which is also what a
+phone looks like from the back.
+
+From the user, after trying it live: look-alikes briefly score high, then drop, which is not a
+big problem; but at threshold 0.70 a wallet at 0.40 stayed "a phone", because once accepted
+an object was kept down to half the threshold (0.35) with no time limit.
+
+Changes:
+
+- Defaults set by the user: dilation 0 px (works best on the real camera), threshold 0.70.
+- Re-confirmation: below the threshold an object only counts as a phone if it reached the full
+  threshold within the last 1.5 s (panel slider "Weaker score may carry a phone for", 0 to 5 s).
+  The panel shows "sure 0.8 s ago" next to the phone's score.
+
+Checked on the moving clip, frame by frame (fill: stylised):
+
+| threshold | window | frames sure | weak frames | weak frames still counted | phone counted | longest carried on weak scores |
+|---|---|---|---|---|---|---|
+| 0.92 | no limit | 0 | 163 | 163 | 100 % | 11.5 s |
+| 0.92 | 1.5 s | 0 | 170 | 0 | 0 % | 0 s |
+| 0.88 | no limit | 50 | 110 | 110 | 100 % | 1.6 s |
+| 0.88 | 1.5 s | 61 | 99 | 97 | 99 % | 1.5 s |
+| 0.88 | 0.5 s | 65 | 91 | 67 | 85 % | 0.5 s |
+
+The first row is the reported problem: carried for 11.5 s without ever being sure. With the
+window, a phone that is sure about a third of the time stays counted 99 % of the time.
+
+### Open
+
+- Decision for the user: keep hunting the Safari leak (uncertain; even fixed, the 2018 iPad
+  would update the fill only a few times a second), run the iPad on the CPU (no leak, but very
+  slow), or show the Mac on 24 Nov and leave the iPad for a native app (Core ML, Neural Engine)
+  later.
+- Chrome's fake camera cropped a portrait clip to 480×480; what Safari's camera delivers in
+  portrait is to be seen on the device.

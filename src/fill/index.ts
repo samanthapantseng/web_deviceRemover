@@ -4,21 +4,29 @@ import { StylisedFill } from './stylised';
 import { TeleaFill } from './telea';
 import type { Fill } from './types';
 
-export type FillState = 'loading' | 'ready' | 'failed';
+export type FillState = 'idle' | 'loading' | 'ready' | 'failed';
 
-/** The selectable fills and their load state. To add a fill: implement `Fill`, register it here. */
+/**
+ * The selectable fills and their load state. To add a fill: implement `Fill`, register it here.
+ *
+ * A fill is only loaded when it is first wanted. MI-GAN and OpenCV.js together take a lot of
+ * memory, enough to get the page killed on an iPad, so the live view keeps only the one in use
+ * (plus the stylised one, which is tiny and the stand-in while another loads).
+ */
 export class FillSet {
   private fills: Record<FillId, Fill> = {
     migan: new MiganFill(),
     telea: new TeleaFill(),
     stylised: new StylisedFill(),
   };
-  private states: Record<FillId, FillState> = { migan: 'loading', telea: 'loading', stylised: 'loading' };
+  private states: Record<FillId, FillState> = { migan: 'idle', telea: 'idle', stylised: 'idle' };
+  private loads: Partial<Record<FillId, Promise<void>>> = {};
   private errors: Partial<Record<FillId, string>> = {};
 
-  /** Loads every fill. Never rejects: a fill that fails is marked 'failed' and skipped. */
-  async load(onChange?: () => void): Promise<void> {
-    const load = async (id: FillId) => {
+  /** Starts loading a fill unless it is loaded or loading. Never rejects: a fill that fails is marked 'failed'. */
+  ensure(id: FillId): Promise<void> {
+    this.loads[id] ??= (async () => {
+      this.states[id] = 'loading';
       try {
         await this.fills[id].init();
         this.states[id] = 'ready';
@@ -27,10 +35,14 @@ export class FillSet {
         this.errors[id] = err instanceof Error ? err.message : String(err);
         console.error(`[fill] ${id} failed to load`, err);
       }
-      onChange?.();
-    };
-    await load('stylised'); // instant, and the fallback for the other two
-    await Promise.all([load('telea'), load('migan')]);
+    })();
+    return this.loads[id];
+  }
+
+  /** Loads every fill (the still-image test page compares them all). */
+  async load(): Promise<void> {
+    await this.ensure('stylised');
+    await Promise.all([this.ensure('telea'), this.ensure('migan')]);
   }
 
   get(id: FillId): Fill {
@@ -45,8 +57,10 @@ export class FillSet {
     return this.errors[id];
   }
 
-  /** The wanted fill if it is ready, otherwise the stylised one (which cannot fail). */
+  /** The wanted fill if it is ready, otherwise the stylised one (which cannot fail) while it loads. */
   resolve(wanted: FillId): Fill {
-    return this.states[wanted] === 'ready' ? this.fills[wanted] : this.fills.stylised;
+    if (this.states[wanted] === 'ready') return this.fills[wanted];
+    void this.ensure(wanted);
+    return this.fills.stylised;
   }
 }

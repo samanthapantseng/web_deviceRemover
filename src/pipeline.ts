@@ -17,6 +17,10 @@ export interface PipelineStats {
   effectMs: number;
   phones: number;
   bestScore: number;
+  /** The strongest look-alike turned away by the top-category check, e.g. "book 0.80 (phone 0.31)". */
+  rejected: string;
+  /** ms since the best phone last scored at or above the threshold (0 when it just did). */
+  confirmedAgo: number;
   held: boolean;
 }
 
@@ -42,6 +46,8 @@ export class Pipeline {
     effectMs: 0,
     phones: 0,
     bestScore: 0,
+    rejected: '',
+    confirmedAgo: 0,
     held: false,
   };
   /** Set to see the context window in the mask overlay. */
@@ -104,7 +110,12 @@ export class Pipeline {
     const frame = this.frames[back];
     frame.ctx.drawImage(this.source.element, 0, 0, width, height);
 
-    const det = await this.detector.detect(frame.canvas, width, height, { conf: s.confidence, prior: this.prior });
+    const det = await this.detector.detect(frame.canvas, width, height, {
+      conf: s.confidence,
+      prior: this.prior,
+      topClassOnly: s.topClassOnly,
+      reconfirmMs: s.reconfirmMs,
+    });
 
     const t0 = performance.now();
     const mask = this.stabilizer.update(det.boxes.length ? det.mask : null, det.bounds, {
@@ -150,6 +161,9 @@ export class Pipeline {
     st.effectMs = mask.present ? smooth(st.effectMs, effectMs) : 0;
     st.phones = det.boxes.length;
     st.bestScore = det.boxes.reduce((m, b) => Math.max(m, b.score), 0);
+    st.confirmedAgo = det.boxes.length ? now - Math.max(...det.boxes.map((b) => b.confirmedAt)) : 0;
+    const r = det.rejected[0];
+    st.rejected = r ? `${r.top.name} ${r.top.score.toFixed(2)} (phone ${r.score.toFixed(2)})` : '';
     st.held = mask.held;
 
     if (this.snapshotWaiters.length) {

@@ -6,13 +6,15 @@
   "description": "Live camera view in which phones are erased from people's hands. Runs fully on-device in the browser.",
   "scripts": {
     "dev": "vite",
+    "dev:ipad": "bash scripts/make_cert.sh && vite --mode ipad",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "models": "bash scripts/fetch_models.sh",
     "copy-ort": "node scripts/copy_ort.mjs",
     "postinstall": "node scripts/copy_ort.mjs",
-    "check": "node scripts/headless_check.mjs"
+    "check": "node scripts/headless_check.mjs",
+    "stills": "node scripts/stills_report.mjs"
   },
   "dependencies": {
     "@techstark/opencv-js": "^4.12.0-release.1",

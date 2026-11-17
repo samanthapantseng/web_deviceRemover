@@ -41,10 +41,65 @@ Then open <http://localhost:5173/> in Chrome and allow the camera.
 | `F` | fullscreen |
 | `D` | debug panel |
 | `X` | mirror |
+| double-tap | debug panel, on a touch screen (it has buttons for snapshot and fullscreen) |
 
 The debug panel shows display fps, fill fps, detection / mask / inpaint times and the active
 backend, and has sliders for confidence, dilation, feather, hold frames, mask persistence,
-inpaint crop size and fill smoothing. Settings are remembered in the browser.
+inpaint crop size and fill smoothing, and a front / back camera choice (for a tablet).
+Settings are remembered in the browser. The screen is kept awake while the page is open.
+
+## Testing on the iPad
+
+The iPad runs the same page in Safari; the Mac only serves the files. Safari allows the camera
+only on `https` pages, so the Mac serves the page over https on the local network, with a
+certificate the iPad has been told to trust.
+
+On the Mac, in a second terminal (`npm run dev` can keep running for the Mac):
+
+```bash
+npm run dev:ipad
+```
+
+It prints the address for the iPad, e.g. `https://Samanthas-MacBook-Pro.local:8443/`.
+
+**Once, the first time:** the command creates a certificate authority for this Mac and shows
+its certificate, `device-remover-ca.pem`, in Finder (it lives in
+`~/Library/Application Support/Device Remover/certs/`). Install it on the iPad:
+
+1. AirDrop `device-remover-ca.pem` to the iPad (or email it to yourself and open the attachment).
+2. iPad: **Settings → Profile Downloaded** (near the top) → **Install**, enter the passcode,
+   **Install** again.
+3. iPad: **Settings → General → About → Certificate Trust Settings** → turn on
+   **Device Remover local CA**.
+
+This certificate authority can only vouch for `.local` names and private network addresses,
+so it cannot be misused to impersonate real websites. To undo: on the iPad, Settings → General
+→ VPN & Device Management → the profile → Remove; on the Mac, delete the
+`Device Remover` folder in Application Support.
+
+**Then, every time:** iPad and Mac on the same Wi-Fi, open the printed address in Safari and
+allow the camera. Double-tap the picture for the panel. The still test is at `/still.html`; its
+captures land in `captures/` on the Mac.
+
+While the iPad is connected, its timings, errors and status messages (never images) are printed
+in the Mac's terminal and appended to `captures/device-report.jsonl`.
+
+If the page does not load:
+
+- Try the `Network` address Vite prints (`https://10.…:8443/`) instead of the `.local` name.
+- University and venue Wi-Fi often stop devices from reaching each other. Then connect both the
+  Mac and the iPad to an iPhone's Personal Hotspot.
+- A certificate warning means the trust step (3) is missing.
+
+Turning the iPad between portrait and landscape restarts the page in the new orientation.
+Snapshots are saved to Downloads in the Files app.
+
+**What to expect on the iPad Pro 12.9" (2018, A12X).** WebGPU works in Safari there, but the
+models run 25 to 40 times slower than on the M2 Max: with the default detector, finding the
+phone took 0.5 to 1.1 s per frame, MI-GAN 0.2 to 0.55 s, Telea about 0.1 s. With every fill
+loaded at once, Safari closed the page after 10 to 20 s (most likely out of memory); now only
+the fill in use is loaded. Lighter settings to try on the iPad, in the panel:
+**Detector: yolo11s · 320** and **Fill: Telea** or **Stylised**.
 
 ## Exporting the YOLO model by hand
 
@@ -61,6 +116,11 @@ yolo export model=yolo11s-seg.pt format=onnx imgsz=640 opset=17 simplify=True
 Copy the resulting `yolo11s-seg.onnx` to `public/models/`. `yolo11n-seg` is exported the same
 way; it is faster but misses phones (see below). Switch between them in the debug panel.
 
+The light variants for slower devices are the same models exported with `imgsz=320`, saved as
+`yolo11s-seg-320.onnx` and `yolo11n-seg-320.onnx`. The detector reads the input size from the
+model. On the test clip `yolo11s-seg-320` found the phone as reliably as the 640 version, with
+a quarter of the work; `yolo11n-seg-320` found it in only 11 % of frames.
+
 To check what a model expects:
 
 ```bash
@@ -73,6 +133,10 @@ uv run --python 3.12 --with onnx python scripts/inspect_onnx.py public/models/mi
   countdown) or open an image; it runs detection and every fill once and times each step.
   With `npm run dev`, a webcam capture is also written to `captures/` (gitignored).
   `?img=captures/x.png&model=yolo11n-seg&cropSize=400` and similar parameters are accepted.
+- **What the detector makes of your captures**: type what you are holding in the field on the
+  still page before capturing (e.g. `book`), then run `npm run stills`. It lists every
+  `captures/still-*.png` with its phone score with and without the top-category check, and
+  what the model really thinks the turned-away objects are.
 - **Live view on a still image**: `http://localhost:5173/?src=captures/x.png`.
 - **Headless check**: plays a clip as a fake webcam in the installed Chrome and prints
   timings for every fill mode.
@@ -99,17 +163,21 @@ yolo11s-seg. The same pipeline in a visible Chromium window displayed at 120 fps
 | Stylised (canvas) | 29.9 fps | 24 ms | 0.7 ms | 0.9 ms | 60 fps |
 | MI-GAN, no WebGPU | 2.1 fps | 250 ms | 1 ms | 260 ms | 60 fps |
 
-Not yet measured: a real webcam with a real person.
+Not yet measured: a real webcam with a real person, and the iPad.
 
 ## How flicker is kept down
 
-- **Detection hysteresis**: a phone that was accepted stays accepted down to half the
-  confidence threshold.
+- **Detection hysteresis, with re-confirmation**: a new phone needs the full confidence
+  threshold (default 0.70). Once found, it stays counted down to half the threshold, but only
+  for 1.5 s after it last reached the full threshold ("Weaker score may carry a phone for" in
+  the panel). After that it has to be confirmed again, so a look-alike that scored high once
+  does not stay "a phone" for good.
 - **Hold**: when detection drops out, the last mask is frozen for N frames (default 5), then
   the fill fades out over 180 ms.
 - **Mask persistence**: a pixel that was phone stays masked for 150 ms, so a wobbling mask
   edge never exposes a sliver.
-- **Dilation and feather** from one distance field: a round 12 px grow and an 8 px soft edge.
+- **Dilation and feather** from one distance field: a round grow (default 0 px, which worked
+  best on the real camera) and an 8 px soft edge.
 - **Still inpaint window**: the window given to MI-GAN only moves when the phone nears its
   edge. A window that follows the phone pixel by pixel makes the fill shimmer.
 - **Fill smoothing**: while the window is still, each new fill is blended with the previous.
@@ -118,13 +186,19 @@ Not yet measured: a real webcam with a real person.
 
 ## Known limitations
 
+- **Phone look-alikes.** The detector is a general model (80 everyday categories). Something
+  only counts as a phone if "cell phone" is its best guess among all 80 (the top-category
+  check, on by default). Objects it has no category for can still come out as "cell phone":
+  on the real camera, a black wallet held upright scored 0.90, next to 0.94 for a real phone,
+  so no threshold separates those two.
 - **Phones seen from far away or at odd angles are missed.** The detector knows COCO's
   "cell phone" class. In one test photo a phone about 30 px tall was not found.
   `yolo11n-seg` found a dark phone in 59 % of frames of a moving test clip; `yolo11s-seg`
   found it in all of them, which is why it is the default.
 - **Fingers on the phone are erased with it.** YOLO's mask includes a thumb lying on the
-  screen, and the 12 px dilation removes fingertips at the phone's edge. Less dilation is not
-  the answer: leftover finger fragments make MI-GAN paint skin-coloured blobs.
+  screen. With dilation, fingertips at the phone's edge go too; without it (the default now),
+  leftover phone edges can show. On a stock photo, leftover finger fragments made MI-GAN paint
+  skin-coloured blobs.
 - **MI-GAN invents.** It was trained on scenes, not hands. When the phone fills a large part
   of its window it paints objects into the hand; keeping the hole under about 15 % of the
   window (the default) avoids most of it. Results vary with camera noise.
@@ -135,6 +209,9 @@ Not yet measured: a real webcam with a real person.
 - **640×480** processing and display resolution.
 - **Without WebGPU** it still runs (CPU, in a worker so the camera view stays smooth), but the
   fill updates only 2 to 4 times a second.
+- **On the 2018 iPad Pro it is too slow for the default settings** (see "Testing on the iPad").
+  A fill that is picked for the first time loads on demand, so the stylised fill stands in for
+  a moment.
 - The camera is assumed to be static, but nothing uses that yet (no background memory).
 
 ## Structure
@@ -151,6 +228,9 @@ src/
   runtime/ort.ts     onnxruntime-web set-up (WebGPU, CPU fallback)
   ui/panel.ts        debug panel
   still.ts           still-image test page
+  devReport.ts       iPad mode only: sends timings and errors to the Mac's terminal
+scripts/
+  make_cert.sh       https certificate for npm run dev:ipad
 ```
 
 To add a mode (phone inflating, and so on), implement `Effect` in `src/effects/` and pass it
@@ -164,7 +244,7 @@ npm run build
 ```
 
 `dist/` is a static site with relative paths, so it works from a project sub-path. It
-contains the models (about 145 MB in all), which are not in git, so publish the built
+contains the models (about 200 MB in all), which are not in git, so publish the built
 `dist/` folder rather than building on GitHub. Pages cannot send the cross-origin isolation
 headers; that only affects the CPU fallback (single-threaded there). The camera needs https,
 which Pages provides.

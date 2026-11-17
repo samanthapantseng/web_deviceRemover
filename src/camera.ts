@@ -17,13 +17,22 @@ function fit(w: number, h: number): { width: number; height: number } {
   return { width: Math.round((w * s) / 2) * 2, height: Math.round((h * s) / 2) * 2 };
 }
 
-export async function openCamera(): Promise<FrameSource> {
+/** 'front': the camera on the screen side (the only one on a Mac); 'back': an iPad's rear camera. */
+export type CameraFacing = 'front' | 'back';
+
+export async function openCamera(facing: CameraFacing = 'front'): Promise<FrameSource> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error('Camera API unavailable. Open the page on http://localhost or over https.');
   }
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 }, facingMode: 'user' },
+    video: {
+      width: { ideal: 640 },
+      height: { ideal: 480 },
+      frameRate: { ideal: 30 },
+      // A preference, not a demand: a Mac has one camera and returns it either way.
+      facingMode: facing === 'back' ? 'environment' : 'user',
+    },
   });
   const video = document.createElement('video');
   video.muted = true;
@@ -92,8 +101,12 @@ function frameWaiter(video: HTMLVideoElement): () => Promise<void> {
 }
 
 /** Grab one frame from the webcam and release the camera again. */
-export async function captureStill(countdown?: (secondsLeft: number) => void, seconds = 3): Promise<HTMLCanvasElement> {
-  const cam = await openCamera();
+export async function captureStill(
+  countdown?: (secondsLeft: number) => void,
+  seconds = 3,
+  facing: CameraFacing = 'front',
+): Promise<HTMLCanvasElement> {
+  const cam = await openCamera(facing);
   try {
     for (let s = seconds; s > 0; s--) {
       countdown?.(s);

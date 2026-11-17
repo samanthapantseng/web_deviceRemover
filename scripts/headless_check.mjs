@@ -7,6 +7,7 @@
 //   npm run check -- captures/clip_moving.y4m
 //   npm run check -- captures/clip_moving.y4m "backend=wasm"      # extra URL parameters
 //   BASE=http://localhost:4173/ npm run check -- captures/clip_moving.y4m   # against `npm run preview`
+//   BASE=https://localhost:8443/ npm run check -- captures/clip_moving.y4m  # against `npm run dev:ipad`
 //
 // Also writes captures/check_sheet.jpg (8 consecutive views, MI-GAN) and captures/check_before_after.jpg.
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -37,6 +38,9 @@ const browser = await puppeteer.launch({
     '--no-default-browser-check',
   ],
   defaultViewport: { width: 1280, height: 960 },
+  // The iPad server's certificate is only trusted by devices that installed its CA; this
+  // throw-away browser profile has not.
+  acceptInsecureCerts: true,
 });
 
 try {

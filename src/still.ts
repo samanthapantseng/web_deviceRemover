@@ -4,9 +4,13 @@
 //   &model=yolo11s-seg &conf=0.2    override the detector / threshold
 //   &cropSize=400 &dilate=8 ...     override any numeric setting
 //   &save=name                      (dev server only) also write the result sheet to captures/name.png
+//   &camera=back                    capture from an iPad's rear camera
+//   &top=0                          turn off the top-category check (compare with &top=1)
+//   &detectOnly                     skip the fills (fast; used by scripts/stills_report.mjs)
 import './style.css';
 import { captureStill, loadImage } from './camera';
 import { YoloSegDetector } from './detect/yoloSeg';
+import { report as sendReport, startReporting } from './devReport';
 import { RemoveEffect } from './effects/remove';
 import type { EffectFrame } from './effects/types';
 import { FillSet } from './fill';
@@ -16,12 +20,16 @@ import { SettingsStore, type DetectorModel, type FillId, type Settings, type Sty
 import { downloadPng, timestamp, toPngBlob } from './snapshot';
 import { makeCanvas } from './types';
 
+startReporting();
+
 const params = new URLSearchParams(location.search);
 const base = new SettingsStore().value;
 const settings: Settings = {
   ...base,
+  camera: params.get('camera') === 'back' ? 'back' : params.get('camera') === 'front' ? 'front' : base.camera,
   detector: (params.get('model') as DetectorModel | null) ?? base.detector,
   confidence: Number(params.get('conf') ?? base.confidence),
+  topClassOnly: params.has('top') ? params.get('top') !== '0' : base.topClassOnly,
   fillSmoothing: 0,
   mirror: false,
 };
@@ -40,12 +48,17 @@ const msg = $<HTMLSpanElement>('msg');
 const captureBtn = $<HTMLButtonElement>('capture');
 const saveBtn = $<HTMLButtonElement>('save');
 const fileInput = $<HTMLInputElement>('file');
+const labelInput = $<HTMLInputElement>('label');
+
+/** "Blue notebook!" → "blue-notebook", for file names. */
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
 
 const detector = new YoloSegDetector();
 const fills = new FillSet();
 
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
 const RUNS = 5;
+const detectOnly = params.has('detectOnly');
 
 async function saveToProject(canvas: HTMLCanvasElement, name: string): Promise<boolean> {
   if (!import.meta.env.DEV) return false;
@@ -61,17 +74,24 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
   const effect = new RemoveEffect(width, height, fills);
 
   // Detection (first run is a warm-up for this input, then timed runs).
-  let det = await detector.detect(frame, width, height, { conf: settings.confidence });
+  const opts = { conf: settings.confidence, topClassOnly: settings.topClassOnly };
+  let det = await detector.detect(frame, width, height, opts);
   const pre: number[] = [];
   const infer: number[] = [];
   const post: number[] = [];
   for (let i = 0; i < RUNS; i++) {
-    det = await detector.detect(frame, width, height, { conf: settings.confidence });
+    det = await detector.detect(frame, width, height, opts);
     pre.push(det.preMs);
     infer.push(det.inferMs);
     post.push(det.postMs);
   }
   const boxes = det.boxes.map((b) => ({ ...b }));
+  const rejected = det.rejected.map((r) => ({ ...r }));
+  // One line on what the detector made of this frame.
+  const verdict = [
+    ...boxes.map((b) => `PHONE ${b.score.toFixed(2)} (next best: ${b.next.name} ${b.next.score.toFixed(2)})`),
+    ...rejected.map((r) => `not a phone: ${r.top.name} ${r.top.score.toFixed(2)} beats phone ${r.score.toFixed(2)}`),
+  ].join(' · ') || 'nothing phone-like';
 
   const maskTimes: number[] = [];
   let mask = stabilizer.update(null, null, { dilate: 0, feather: 0, holdFrames: 0, persistFrames: 1 });
@@ -108,8 +128,17 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
     ctx.font = '12px ui-monospace, Menlo, monospace';
     for (const b of boxes) {
       ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
-      ctx.fillText(b.score.toFixed(2), b.x1, b.y1 - 4);
+      ctx.fillText(`phone ${b.score.toFixed(2)}`, b.x1, b.y1 - 4);
     }
+    // Look-alikes the top-category check turned away, in cyan.
+    ctx.strokeStyle = '#00e5ff';
+    ctx.fillStyle = '#00e5ff';
+    ctx.setLineDash([4, 4]);
+    for (const r of rejected) {
+      ctx.strokeRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+      ctx.fillText(`${r.top.name} ${r.top.score.toFixed(2)} > phone ${r.score.toFixed(2)}`, r.x1, r.y2 + 14);
+    }
+    ctx.setLineDash([]);
     tiles.push({ label: `mask (${boxes.length} phone${boxes.length === 1 ? '' : 's'})`, canvas });
   }
 
@@ -120,7 +149,7 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
     { fill: 'stylised', style: 'flat', label: 'stylised: flat' },
     { fill: 'stylised', style: 'void', label: 'stylised: void' },
   ];
-  for (const v of variants) {
+  for (const v of detectOnly ? [] : variants) {
     const s: Settings = { ...settings, fill: v.fill, style: v.style ?? settings.style };
     const f: EffectFrame = { frame, width, height, mask, maskCanvas: alphaCanvas.canvas, boxes, settings: s };
     const { canvas, ctx } = makeCanvas(width, height);
@@ -163,7 +192,18 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
     frame: `${width}×${height}`,
     detector: `${settings.detector} · ${detector.backend}`,
     confidence: settings.confidence,
-    phones: boxes.map((b) => ({ score: +b.score.toFixed(3), box: [b.x1, b.y1, b.x2, b.y2].map(Math.round) })),
+    topClassOnly: settings.topClassOnly,
+    verdict,
+    phones: boxes.map((b) => ({
+      score: +b.score.toFixed(3),
+      next: `${b.next.name} ${b.next.score.toFixed(3)}`,
+      box: [b.x1, b.y1, b.x2, b.y2].map(Math.round),
+    })),
+    rejected: rejected.map((r) => ({
+      phone: +r.score.toFixed(3),
+      top: `${r.top.name} ${r.top.score.toFixed(3)}`,
+      box: [r.x1, r.y1, r.x2, r.y2].map(Math.round),
+    })),
     hole: mask.present ? mask.roi : null,
     crop: effect.rect,
     medianMs: {
@@ -175,7 +215,8 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
   };
   report.textContent = `${JSON.stringify(summary, null, 2)}\n\n${lines.join('\n')}`;
   Object.assign(window, { stillReport: { ...summary, fills: lines } });
-  msg.textContent = boxes.length ? 'done' : 'done: no phone detected in this frame';
+  sendReport('still', { summary: { ...summary, fills: lines } });
+  msg.textContent = verdict;
   saveBtn.disabled = false;
 
   const save = params.get('save');
@@ -186,7 +227,7 @@ async function main(): Promise<void> {
   try {
     await detector.init(settings.detector, (f) => (msg.textContent = `loading detector… ${Math.round(f * 100)}%`));
     msg.textContent = 'loading fill models…';
-    await fills.load();
+    if (!detectOnly) await fills.load();
   } catch (err) {
     msg.textContent = `failed: ${(err as Error).message}`;
     console.error(err);
@@ -198,16 +239,18 @@ async function main(): Promise<void> {
   captureBtn.onclick = async () => {
     captureBtn.disabled = true;
     try {
-      const frame = await captureStill((s) => (msg.textContent = s ? `hold your phone up… ${s}` : 'captured'));
-      const stamp = timestamp();
-      const saved = await saveToProject(frame, `still-${stamp}.png`);
+      const frame = await captureStill((s) => (msg.textContent = s ? `hold your phone up… ${s}` : 'captured'), 3, settings.camera);
+      const label = slug(labelInput.value);
+      const name = `${timestamp()}${label ? `-${label}` : ''}`;
+      const saved = await saveToProject(frame, `still-${name}.png`);
       await run(frame);
       if (saved) {
-        await saveToProject(sheet, `result-${stamp}.png`);
-        msg.textContent += ` · saved captures/still-${stamp}.png and captures/result-${stamp}.png`;
+        await saveToProject(sheet, `result-${name}.png`);
+        msg.textContent += ` · saved captures/still-${name}.png`;
       }
     } catch (err) {
       msg.textContent = `capture failed: ${(err as Error).message}`;
+      console.error('[still] capture failed', err);
     }
     captureBtn.disabled = false;
   };
