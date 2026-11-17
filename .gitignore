@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Model binaries: fetched/exported by `npm run models`
+public/models/*.onnx
+*.pt
+
+# onnxruntime-web runtime, copied from node_modules on `npm install`
+public/ort/
+
+# Test stills saved from the still-image test page (may contain faces)
+captures/
