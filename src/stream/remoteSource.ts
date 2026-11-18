@@ -8,6 +8,7 @@
 import { fit, frameWaiter, type FrameSource } from '../camera';
 import { report, reporting } from '../devReport';
 import { LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
+import { serveShots, SHOT_CHANNEL } from './shots';
 import { Signal, type SignalMessage } from './signal';
 
 type Say = (text: string, isError?: boolean) => void;
@@ -20,6 +21,11 @@ export interface RemoteSource extends FrameSource {
    * keeps its last picture, instead of getting unprocessed frames with the phones still in.
    */
   sendBack(view: HTMLCanvasElement): void;
+  /**
+   * How to make the iPad's screenshot (its Screenshot button): a before/after PNG, each half
+   * mirrored if `mirror` (the iPad shows the picture mirrored). See shots.ts.
+   */
+  onScreenshot(make: (mirror: boolean) => Promise<Blob>): void;
 }
 
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
@@ -52,6 +58,11 @@ export function openRemote(say: Say): Promise<RemoteSource> {
   let connectedAt = 0;
   let lastFrameAt = 0;
   let restartAskedAt = 0;
+  let makeShot: ((mirror: boolean) => Promise<Blob>) | null = null;
+  const shot = (mirror: boolean) => {
+    report('status', { text: 'screenshot asked for by the iPad' });
+    return makeShot ? makeShot(mirror) : Promise.reject(new Error('the detector is still loading'));
+  };
 
   const waiting = (text: string) => {
     // Before the first frame main.ts shows its own "waiting for the iPad…".
@@ -97,6 +108,10 @@ export function openRemote(say: Say): Promise<RemoteSource> {
         waitingShown = false;
         say('');
       }
+    };
+    // The iPad's screenshot requests (an iPad page from before this channel existed has none).
+    p.ondatachannel = (e) => {
+      if (pc === p && e.channel.label === SHOT_CHANNEL) serveShots(e.channel, shot);
     };
     await p.setRemoteDescription({ type: 'offer', sdp: o.sdp });
     const t = p.getTransceivers().find((x) => x.receiver.track.kind === 'video');
@@ -215,6 +230,9 @@ export function openRemote(say: Say): Promise<RemoteSource> {
           signal.stop();
         },
         sendBack,
+        onScreenshot: (make) => {
+          makeShot = make;
+        },
       });
     };
     video.addEventListener('loadedmetadata', onSize);

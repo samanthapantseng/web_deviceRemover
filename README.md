@@ -83,7 +83,7 @@ Access).
 3. **On the iPad**, on the same Wi-Fi as the Mac: in Safari, open the address from step 1 with
    `stream.html` added, for example `https://10.21.12.136:8443/stream.html`, and allow the
    camera. After a few seconds the picture appears, phones removed. Double-tap for the iPad's
-   own small panel.
+   own small panel (it has Screenshot and Record buttons).
 
 To stop: Ctrl-C in both Terminal windows. The address changes on another network; step 1 always
 prints the current one. If port 8443 is already taken (another `npm run dev:ipad` running),
@@ -108,10 +108,21 @@ for that: see "Testing on the iPad".
 | `1` `2` `3` | fill mode: MI-GAN, Telea, stylised (press `3` again to step through blur / flat / void) |
 | `M` | mask overlay: mask in magenta, erased objects in yellow, objects being watched in orange (dashed), objects decided against in grey (dashed), inpaint window in cyan |
 | `S` | snapshot: before and after of the same frame, side by side, as a PNG download |
+| `V` | screen recording on / off: only the "after" picture, as an MP4 download (see below) |
 | `F` | fullscreen |
 | `D` | debug panel |
 | `X` | mirror |
-| double-tap | debug panel, on a touch screen (it has buttons for snapshot and fullscreen) |
+| double-tap | debug panel, on a touch screen (it has buttons for snapshot, recording and fullscreen) |
+
+**Screen recording** (`V`, or **Record** in the panel; the button then reads **Stop recording
+· 0:12**). It records only the "after" picture as it is on screen, mirrored as shown, the whole
+frame (640×480), without the mask overlay (`M`) or the panel, as an MP4 at about 4 Mb/s (30 MB
+a minute). A small red **REC 0:12** shows in the bottom-left corner while recording. On stop it
+downloads to Downloads; **Save last recording** in the panel saves it again (until the next
+recording starts). It stops and saves by itself after 5 minutes (`?recordMax=<seconds>`
+changes that). The iPad stream page has the same button (see "Screen recording on the iPad").
+In streaming mode, the Mac page's own Record records the Mac's picture, which is not mirrored
+there.
 
 The debug panel shows display fps, fill fps, detection / mask / inpaint times, the active
 backend and what the tracker is watching (e.g. `#4 watching 1.2/1.5 s · 80 %`: object 4, seen
@@ -192,8 +203,29 @@ back from the Mac, so phones stay hidden even while things start up.
 **Start it** as in "Two ways to run it" above. Mac and iPad have to be on the same network; your
 own small travel router or a phone hotspot is better than venue Wi-Fi (see below). The order
 does not matter, and either side can be reloaded at any time: the iPad reconnects by itself. Settings for the fill and the detector are made on the Mac (`D` for the panel). On the
-iPad, double-tap for its own small panel: camera front/back, mirror, fill the screen,
-reconnect, and the connection's numbers.
+iPad, double-tap for its own small panel: screenshot, screen recording, camera front/back,
+mirror, fill the screen, reconnect, and the connection's numbers.
+
+**Screenshot on the iPad**: the panel's first button (or `S` on a keyboard). The same picture
+as `S` on the Mac: before and after of the same frame, side by side, the whole camera frame
+(not cropped to the screen), each half mirrored like the iPad shows it. The Mac makes it and
+sends it back over the same direct connection as the video (not through the dev server). A
+short white flash confirms the tap; a moment later Safari's share sheet opens: **Save Image**
+puts it in Photos, **AirDrop** sends it to the Mac. If Safari decides the tap was too long ago
+to open the sheet, a **Screenshot ready · tap to save** button appears at the bottom; tap it.
+Where there is no share sheet, it downloads instead (Files → Downloads). It needs the
+connection to the Mac; without one, the iPad says so.
+
+**Screen recording on the iPad**: **Record** in the panel (or `V` on a keyboard); the same
+button then reads **Stop recording · 0:12**. It records only the "after" picture, what the iPad
+shows, mirrored as shown, the whole frame (640×480), as an MP4 at about 4 Mb/s (30 MB a
+minute). It is recorded on the iPad itself, so nothing extra goes over the network. While
+recording, a small red **REC 0:12** shows in the bottom-left corner, quiet like the reconnect
+indicator. On stop the file downloads (Safari asks first; it goes to Files → Downloads). If no
+download happened, **Save last recording** in the panel saves it again (until the next
+recording starts). A recording stops and saves by itself after 5 minutes, so a forgotten one
+cannot fill the iPad's memory (`?recordMax=<seconds>` on the page's address changes that). During
+a reconnect the recording holds the last picture.
 
 **Once, on the Mac:** WebGPU needs a page Chrome trusts, so the Mac has to trust the same
 certificate authority the iPad does (`npm run stream:mac` says when it doesn't). Open
@@ -412,7 +444,9 @@ src/
   still.ts           still-image test page
   devReport.ts       iPad mode only: sends timings and errors to the Mac's terminal
   stream/            streaming mode: ipad.ts (the iPad's page), remoteSource.ts (the Mac's
-                     side), link.ts (WebRTC set-up, statistics), signal.ts, latency.ts
+                     side), link.ts (WebRTC set-up, statistics), signal.ts, latency.ts,
+                     shots.ts (the iPad's before/after screenshot, made on the Mac)
+  recorder.ts        screen recording of the "after" picture (Mac page and iPad stream page)
 server/
   signalHub.ts       streaming mode: introduces the two pages to each other (dev server only)
 stream.html          streaming mode: the iPad's page

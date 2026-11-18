@@ -15,6 +15,43 @@
   display: none;
 }
 
+/* Screenshot taken: a short white flash over the picture, like a camera. */
+#shot-flash {
+  position: fixed;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#shot-flash.flash {
+  animation: shot-flash 0.35s ease-out;
+}
+
+@keyframes shot-flash {
+  from {
+    opacity: 0.7;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Shown only when Safari wants one more tap to open the share sheet for a screenshot. */
+.save-shot {
+  position: fixed;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  font-size: 16px;
+  padding: 10px 18px;
+  background: rgba(0, 0, 0, 0.82);
+}
+
+.save-shot.gone {
+  display: none;
+}
+
 /* Small and quiet: visible to whoever runs the piece, easy to miss for visitors. */
 #outage {
   position: fixed;
