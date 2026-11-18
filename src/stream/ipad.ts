@@ -10,14 +10,18 @@
  *   ?latency             measure the round trip with a frame counter in the corner (test only)
  *   ?codec=h264|vp8|any  video codec for both directions (default h264); the Mac follows
  *   ?buffer=default      leave the browser's own jitter buffer (default: as small as possible)
+ *   ?recordMax=<s>       a screen recording stops by itself after this long (default 300 s)
  */
 import '../style.css';
 import './stream.css';
 import { report, reporting, startReporting } from '../devReport';
+import { downloadBlob, timestamp } from '../snapshot';
 import { isTouchDevice } from '../ui/panel';
 import { codecFromUrl, describeLink, LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
 import { Stamper, StampReader } from './latency';
+import { ScreenRecorder } from '../recorder';
 import { keepScreenOn, toggleFullscreen } from './screen';
+import { SHOT_CHANNEL, ShotClient } from './shots';
 import { Signal, type SignalMessage } from './signal';
 
 startReporting();
@@ -96,6 +100,129 @@ function releasePicture(): void {
   freeze.classList.add('gone');
 }
 
+// ---------------------------------------------------------------- screenshot
+
+/**
+ * Before and after of the same frame, side by side, like S on the Mac: the Mac makes it from
+ * the frame it received and sends the PNG back over the connection (shots.ts). Each half is
+ * mirrored like the picture here. On the iPad the share sheet opens ("Save Image" puts it in
+ * Photos, or AirDrop it to the Mac); elsewhere, or with no share sheet, it downloads.
+ */
+const shots = new ShotClient();
+
+/** Safari opens the share sheet only shortly after a tap. If the picture took longer, this button asks for one more tap. */
+const saveButton = el('button', 'btn save-shot gone', 'Screenshot ready · tap to save');
+let readyFile: File | null = null;
+let readyTimer: ReturnType<typeof setTimeout> | undefined;
+saveButton.onclick = () => {
+  if (readyFile) save(readyFile, false);
+};
+
+function note(text: string): void {
+  say(text);
+  setTimeout(() => status.textContent === text && say(''), 3000);
+}
+
+function showSaveButton(file: File | null): void {
+  clearTimeout(readyTimer);
+  readyFile = file;
+  saveButton.classList.toggle('gone', !file);
+  // Not saved within a minute: let it go.
+  if (file) readyTimer = setTimeout(() => showSaveButton(null), 60_000);
+}
+
+function save(file: File, firstTry: boolean): void {
+  if (isTouchDevice && navigator.canShare?.({ files: [file] })) {
+    navigator
+      .share({ files: [file] })
+      .then(() => showSaveButton(null))
+      .catch((err: Error) => {
+        if (err.name === 'AbortError') showSaveButton(null); // the sheet was closed without saving
+        else if (err.name === 'NotAllowedError' && firstTry) showSaveButton(file); // too long after the tap
+        else {
+          showSaveButton(null);
+          downloadBlob(file, file.name);
+        }
+      });
+  } else {
+    downloadBlob(file, file.name);
+  }
+}
+
+async function screenshot(): Promise<void> {
+  if (shots.busy) return;
+  if (!shots.ready) {
+    note('the screenshot comes from the Mac: no connection to it right now');
+    return;
+  }
+  flash.classList.remove('flash');
+  void flash.offsetWidth; // restart the animation
+  flash.classList.add('flash');
+  showSaveButton(null);
+  const t0 = performance.now();
+  try {
+    const blob = await shots.request(prefs.mirror);
+    report('status', { text: `screenshot from the Mac: ${Math.round(blob.size / 1024)} KB in ${Math.round(performance.now() - t0)} ms` });
+    save(new File([blob], `device-remover_ipad_${timestamp()}.png`, { type: 'image/png' }), true);
+  } catch (err) {
+    note(`no screenshot: ${(err as Error).message}`);
+  }
+}
+
+// ---------------------------------------------------------------- screen recording
+
+/**
+ * Records what this screen shows, the "after" picture from the Mac (recorder.ts), and
+ * downloads it when stopped (Files → Downloads on the iPad). Stops by itself after
+ * ?recordMax seconds (default 5 minutes), so a forgotten recording cannot fill the memory.
+ */
+const recorder = new ScreenRecorder();
+const recordMax = Number(params.get('recordMax')) || 300;
+/** Small and quiet, like the reconnect indicator: whoever runs the piece can see it is recording. */
+const recIndicator = el('div', 'hidden');
+recIndicator.id = 'rec';
+recorder.onChange = () => updateRecordUi();
+recorder.onFile = (file) => {
+  report('status', { text: `recording saved: ${file.name}, ${(file.size / 2 ** 20).toFixed(1)} MB` });
+  downloadBlob(file, file.name);
+};
+
+function toggleRecording(): void {
+  if (recorder.recording) {
+    recorder.stop();
+    return;
+  }
+  if (!ScreenRecorder.supported) {
+    note('this browser cannot record the screen');
+    return;
+  }
+  const held = !freeze.classList.contains('gone');
+  const w = held ? freeze.width : out.videoWidth;
+  const h = held ? freeze.height : out.videoHeight;
+  if (!w || !h) {
+    note('no picture to record yet');
+    return;
+  }
+  try {
+    recorder.start(w, h, `device-remover_ipad_${timestamp()}`, recordMax);
+    recorder.draw(held ? freeze : out, w, h, prefs.mirror);
+    report('status', { text: `recording started, ${w}×${h}` });
+  } catch (err) {
+    note(`cannot record: ${(err as Error).message}`);
+  }
+}
+
+function updateRecordUi(): void {
+  const t = recorder.seconds;
+  const time = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  recordButton.textContent = recorder.recording ? `Stop recording · ${time}` : 'Record';
+  recordButton.classList.toggle('recording', recorder.recording);
+  saveRecordingButton.classList.toggle('gone', recorder.recording || !recorder.last);
+  recIndicator.textContent = `REC ${time}`;
+  recIndicator.classList.toggle('hidden', !recorder.recording);
+}
+setInterval(() => recorder.recording && updateRecordUi(), 500);
+
 // ---------------------------------------------------------------- panel (double-tap, or D)
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -110,15 +237,24 @@ const actions = el('div', 'actions');
 const statsBox = el('pre', 'stats');
 panel.append(el('div', 'panel-title', 'Device Remover · stream (iPad)'), actions, statsBox);
 const togglePanel = () => panel.classList.toggle('hidden');
-for (const [label, run] of [
-  ['Fullscreen', toggleFullscreen],
-  ['Reconnect', () => void connect('reconnect button')],
-  ['Close', togglePanel],
-] as const) {
+/** A short white flash over the picture when a screenshot is taken. */
+const flash = el('div');
+flash.id = 'shot-flash';
+document.body.append(flash, saveButton, recIndicator);
+function addAction(label: string, run: () => void): HTMLButtonElement {
   const b = el('button', 'btn', label);
   b.onclick = run;
   actions.append(b);
+  return b;
 }
+addAction('Screenshot', () => void screenshot());
+const recordButton = addAction('Record', toggleRecording);
+/** In case the download did not happen: the last recording stays until the next one starts. */
+const saveRecordingButton = addAction('Save last recording', () => recorder.last && downloadBlob(recorder.last, recorder.last.name));
+saveRecordingButton.classList.add('gone');
+addAction('Fullscreen', toggleFullscreen);
+addAction('Reconnect', () => void connect('reconnect button'));
+addAction('Close', togglePanel);
 {
   const row = el('label', 'row');
   const head = el('div', 'row-head');
@@ -157,7 +293,7 @@ for (const [key, label] of [
   row.append(input, el('span', undefined, label));
   panel.append(row);
 }
-panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · F fullscreen · R reconnect'));
+panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · S screenshot · V record · F fullscreen · R reconnect'));
 document.body.append(panel);
 
 let lastTap = 0;
@@ -174,6 +310,8 @@ window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || e.target instanceof HTMLSelectElement) return;
   const k = e.key.toLowerCase();
   if (k === 'd') togglePanel();
+  else if (k === 's') void screenshot();
+  else if (k === 'v') toggleRecording();
   else if (k === 'f') toggleFullscreen();
   else if (k === 'r') void connect('R key');
 });
@@ -239,6 +377,8 @@ async function connect(reason: string): Promise<void> {
 
   const t = p.addTransceiver(sendTrack, { direction: 'sendrecv', streams: [sendStream] });
   transceiver = t;
+  // The screenshot's way back from the Mac, on the same connection.
+  shots.attach(p.createDataChannel(SHOT_CHANNEL));
   notes = `${preferCodec(t, codec)} · ${lowLatency(t.receiver)}`;
   p.ontrack = (e) => {
     if (pc !== p) return;
@@ -356,6 +496,7 @@ function onFrame(): void {
       report('status', { text: `picture from the Mac (#${connections}), ${Math.round(now - startedAt)} ms after connecting` });
     }
     reader?.read(out);
+    recorder.draw(out, out.videoWidth, out.videoHeight, prefs.mirror);
   }
 }
 const vfc = out as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };

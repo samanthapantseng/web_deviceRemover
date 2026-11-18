@@ -6,8 +6,9 @@ import { GrowEffect } from './effects/grow';
 import { RemoveEffect } from './effects/remove';
 import { FillSet } from './fill';
 import { Pipeline } from './pipeline';
+import { ScreenRecorder } from './recorder';
 import { FILL_ORDER, MODE_ORDER, SettingsStore, STYLE_ORDER, type ModeId } from './settings';
-import { downloadPng, sideBySide, timestamp } from './snapshot';
+import { downloadBlob, downloadPng, mirrored, sideBySide, timestamp, toPngBlob } from './snapshot';
 import { openRemote, type RemoteSource } from './stream/remoteSource';
 import { DebugPanel, isTouchDevice } from './ui/panel';
 
@@ -136,6 +137,8 @@ async function main(): Promise<void> {
   let displayFps = 0;
   let lastFrame = 0;
   let lastStats = 0;
+  const recorder = new ScreenRecorder();
+  let lastRecorded = 0;
   const stats = () => {
     const st = pipeline.stats;
     return {
@@ -160,6 +163,13 @@ async function main(): Promise<void> {
     if (lastFrame && now > lastFrame) displayFps += 0.1 * (1000 / (now - lastFrame) - displayFps);
     lastFrame = now;
     pipeline.render(ctx);
+    // Screen recording, at most 30 frames a second: the picture as on screen, but without the
+    // mask overlay (drawn again without it only while the overlay is on).
+    if (recorder.recording && now - lastRecorded >= 1000 / 30 - 4) {
+      lastRecorded = now;
+      if (settings.showMask) recorder.paint((c) => pipeline.render(c, false));
+      else recorder.draw(view, view.width, view.height, false);
+    }
     if (panel.visible && now - lastStats > 250) {
       lastStats = now;
       panel.setStats(stats());
@@ -170,6 +180,44 @@ async function main(): Promise<void> {
   if (reporting) setInterval(() => report('stats', { ...stats(), cropSize: settings.cropSize, wasmMB: wasmMemoryMB() }), 5000);
 
   const snapshot = () => void pipeline.snapshot().then((snap) => downloadPng(sideBySide(snap), `device-remover_${timestamp()}.png`));
+
+  // Screen recording (V, or Record in the panel): only the "after" picture, downloaded as a
+  // video when stopped. Stops by itself after ?recordMax seconds (default 5 minutes).
+  const recordMax = Number(params.get('recordMax')) || 300;
+  const recIndicator = document.createElement('div');
+  recIndicator.id = 'rec';
+  recIndicator.className = 'hidden';
+  document.body.append(recIndicator);
+  const note = (text: string) => {
+    say(text);
+    setTimeout(() => status.textContent === text && say(''), 3000);
+  };
+  recorder.onChange = () => updateRecordUi();
+  recorder.onFile = (file) => {
+    report('status', { text: `recording saved: ${file.name}, ${(file.size / 2 ** 20).toFixed(1)} MB` });
+    downloadBlob(file, file.name);
+  };
+  const toggleRecording = () => {
+    if (recorder.recording) return recorder.stop();
+    if (!ScreenRecorder.supported) return note('this browser cannot record the screen');
+    try {
+      recorder.start(view.width, view.height, `device-remover_${timestamp()}`, recordMax);
+      lastRecorded = 0;
+      report('status', { text: `recording started, ${view.width}×${view.height}` });
+    } catch (err) {
+      note(`cannot record: ${(err as Error).message}`);
+    }
+  };
+  const updateRecordUi = () => {
+    const t = recorder.seconds;
+    const time = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    recordButton.textContent = recorder.recording ? `Stop recording · ${time}` : 'Record';
+    recordButton.classList.toggle('recording', recorder.recording);
+    saveRecordingButton.classList.toggle('gone', recorder.recording || !recorder.last);
+    recIndicator.textContent = `REC ${time}`;
+    recIndicator.classList.toggle('hidden', !recorder.recording);
+  };
+  setInterval(() => recorder.recording && updateRecordUi(), 500);
 
   // 3. Keys and touch work from the start, also while models are still loading.
   window.addEventListener('keydown', (e) => {
@@ -206,6 +254,9 @@ async function main(): Promise<void> {
       case 's':
         snapshot();
         break;
+      case 'v':
+        toggleRecording();
+        break;
       default:
         return;
     }
@@ -224,6 +275,10 @@ async function main(): Promise<void> {
     }
   });
   panel.addAction('Snapshot', snapshot);
+  const recordButton = panel.addAction('Record', toggleRecording);
+  // In case the download did not happen: the last recording stays until the next one starts.
+  const saveRecordingButton = panel.addAction('Save last recording', () => recorder.last && downloadBlob(recorder.last, recorder.last.name));
+  saveRecordingButton.classList.add('gone');
   panel.addAction('Fullscreen', toggleFullscreen);
   panel.addAction('Close', () => panel.toggle());
 
@@ -239,6 +294,11 @@ async function main(): Promise<void> {
   pipeline.start();
   // Streaming mode: only now, with the detector running, does the iPad get pictures back.
   remote?.sendBack(view);
+  // Streaming mode: the iPad's Screenshot button gets the same before/after as S here, each
+  // half mirrored like the iPad shows it.
+  remote?.onScreenshot((mirror) =>
+    pipeline.snapshot().then((snap) => toPngBlob(sideBySide(mirror ? { before: mirrored(snap.before), after: mirrored(snap.after) } : snap))),
+  );
   const runFor = Number(params.get('runFor'));
   if (runFor > 0) setTimeout(() => (pipeline.stop(), say(`stopped after ${runFor} s (?runFor)`)), runFor * 1000);
   // Only the fill in use is loaded; another one loads when it is picked (stylised meanwhile).

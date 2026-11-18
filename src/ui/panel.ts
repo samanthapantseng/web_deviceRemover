@@ -90,7 +90,7 @@ export class DebugPanel {
         'keys',
         isTouchDevice
           ? 'Double-tap the picture to show or hide this panel.'
-          : 'D panel · G grow/remove · 1/2/3 fill (3 again: next style) · M mask · X mirror · S snapshot · F fullscreen',
+          : 'D panel · G grow/remove · 1/2/3 fill (3 again: next style) · M mask · X mirror · S snapshot · V record · F fullscreen',
       ),
     );
 
@@ -98,10 +98,11 @@ export class DebugPanel {
   }
 
   /** Buttons at the top of the panel, for what is otherwise only on the keyboard. */
-  addAction(label: string, run: () => void): void {
+  addAction(label: string, run: () => void): HTMLButtonElement {
     const b = el('button', 'btn', label);
     b.onclick = run;
     this.actions.append(b);
+    return b;
   }
 
   toggle(): void {

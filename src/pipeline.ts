@@ -204,14 +204,15 @@ export class Pipeline {
   }
 
   /** Draw the current view. `ctx` must be width × height; mirroring is applied here. */
-  render(ctx: CanvasRenderingContext2D): void {
+  render(ctx: CanvasRenderingContext2D, overlay = true): void {
     const s = this.settings;
     ctx.save();
     if (s.mirror) ctx.setTransform(-1, 0, 0, 1, this.width, 0);
     const base = s.syncDisplay ? this.frames[this.front].canvas : this.source.element;
     ctx.drawImage(base, 0, 0, this.width, this.height);
     this.effect.render(ctx);
-    if (s.showMask) this.drawDebug(ctx);
+    // overlay = false: the picture without the mask overlay (screen recording).
+    if (s.showMask && overlay) this.drawDebug(ctx);
     ctx.restore();
   }
 

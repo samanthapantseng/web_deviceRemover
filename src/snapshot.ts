@@ -12,6 +12,17 @@ export function sideBySide(snap: Snapshot): HTMLCanvasElement {
   return canvas;
 }
 
+/** A left-right flipped copy of a canvas. */
+export function mirrored(src: HTMLCanvasElement): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = src.width;
+  canvas.height = src.height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.setTransform(-1, 0, 0, 1, src.width, 0);
+  ctx.drawImage(src, 0, 0);
+  return canvas;
+}
+
 export function timestamp(): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, '0');
@@ -26,7 +37,11 @@ export function toPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 
 /** Saves through the browser's normal download path: the image never leaves the machine. */
 export async function downloadPng(canvas: HTMLCanvasElement, name: string): Promise<void> {
-  const url = URL.createObjectURL(await toPngBlob(canvas));
+  downloadBlob(await toPngBlob(canvas), name);
+}
+
+export function downloadBlob(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = name;

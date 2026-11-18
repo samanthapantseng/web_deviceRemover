@@ -720,3 +720,94 @@ unchanged. Leaving, `G` switching and saved settings (old default shapes load as
 Not verified: live with a real person; a phone held in front of the body (person mask all
 around it: the spread would take in clothing near the fingers, faded); two people close
 together.
+
+## 2026-11-18 · screenshot button on the iPad stream page
+
+Asked for by the user: a screenshot button in the iPad's menu. Added as the first button of the
+stream page's panel (`src/stream/ipad.ts`), and `S` on a keyboard.
+
+First version: the iPad saved the picture on its screen (result only), because on the iPad the
+camera picture and the result arrive at different times. The user wanted the before/after of
+the Mac's `S`, since every frame goes to the Mac anyway. Second version (`src/stream/shots.ts`):
+
+- The tap asks the Mac over a WebRTC data channel on the same connection as the video (the iPad
+  adds it to its offer; the Mac picks it up in `remoteSource.ts`). The Mac makes the same
+  picture as its `S` (`pipeline.snapshot()`: the frame it received, and the result), mirrors
+  each half if the iPad shows it mirrored, and sends the PNG back on the channel in 64 KB
+  pieces. Straight between the devices: the signalling hub still carries no pictures.
+- Saving on the iPad: Safari's share sheet (Save Image to Photos, AirDrop to the Mac). Safari
+  opens it only shortly after a tap; if the picture takes too long and Safari refuses, a
+  "Screenshot ready · tap to save" button appears and one more tap opens the sheet. No share
+  sheet (a Mac, for testing): a download. A 0.35 s white flash confirms the tap.
+- No connection to the Mac: the iPad says so (it cannot make the picture without the Mac). A
+  request that gets no answer fails after 10 s with a message.
+
+Checked with two headless Chromes (a touch "iPad" with the moving clip, and the Mac, MI-GAN):
+three screenshots in a row, each a 1280×480 PNG (820 to 830 KB) in the share sheet 120 to 160 ms
+after the tap, while the tap still counted as the user's; before on the left with the phone,
+after on the right without it, the same frame, both mirrored like the iPad shows it. Safari's
+refusal imitated: the "tap to save" button appeared, the second tap opened the sheet and the
+button went away. No share sheet: the PNG downloaded. Link to the Mac dropped: "no connection to
+it right now". No console errors.
+
+The stream check (`npm run check:stream -- … --no-recovery`) ran normally with the channel.
+Speeds were lower than on 17 Nov because the Mac was busy (another session's tests, and a
+Chrome tab using a full core): the plain Mac check fell from 13.5 to 10.6 MI-GAN fills a second
+at the same time. Alternating runs gave 10.8 (channel off), 9.9 (on), 6.2 (off) MI-GAN fills a
+second, so the channel itself costs nothing measurable; the swings are the load.
+
+Not yet tried on the real iPad: how long the picture takes over Wi-Fi (about 0.8 MB), and
+whether Safari still opens the share sheet straight away or needs the second tap.
+
+## 2026-11-18 · screen recording on the iPad stream page
+
+Asked for by the user: a screen-recording button that records only the "after" picture and
+saves to Downloads. Added as **Record** in the iPad panel (`V` on a keyboard),
+`src/recorder.ts`.
+
+- Recorded on the iPad, from the picture the Mac sends back: every frame shown is drawn,
+  mirrored as shown, into a canvas whose stream goes to a MediaRecorder (MP4/H.264 where the
+  browser can, else WebM; 4 Mb/s). Nothing extra goes over the network, and the Mac is not
+  involved. The alternative, recording on the Mac (its own picture, one compression step
+  fewer) and sending the file to the iPad, was not built: a long recording is tens of MB over
+  Wi-Fi.
+- The button turns into "Stop recording · 0:12"; a small red "REC 0:12" in the bottom-left
+  corner while recording. On stop the file downloads; "Save last recording" saves it again
+  until the next recording starts. Stops and saves by itself after 5 min (`?recordMax=`), my
+  choice, against filling the iPad's memory (about 30 MB a minute, held in memory until saved).
+
+Checked with two headless Chromes (touch "iPad" with the moving clip, Mac with MI-GAN): a 5 s
+recording by tap gave an H.264 MP4, 640×480, 5.6 s, about 27 fps, 3.8 Mb/s; a frame from it shows
+the after picture only, mirrored like the screen. Button label, the REC indicator and "Save last
+recording" appear and go as they should; that button started a second download (headless Chrome
+then holds back a second download from the same page, as Chrome does without the user's
+permission). Automatic stop with `?recordMax=3`, started with `V`: a 3.0 s file. No console
+errors.
+
+Not verified on the real iPad: Safari's MP4 recording of the received stream, whether the
+download starts by itself after Stop or needs "Save last recording", and the iPad's frame rate
+while recording.
+
+## 2026-11-18 · screen recording on the Mac page (Mac solo)
+
+Asked for by the user: the same screen recording on the Mac on its own. `V` or **Record** in the
+Mac's panel, with the same button label, REC indicator, "Save last recording" and 5-minute stop
+as on the iPad. The recorder (`src/recorder.ts`) and its CSS (`style.css`) are shared by both
+pages.
+
+Moved to its own branch, `capture` (off `main`), at the user's request, so it can be merged
+without grow mode; it was written in the grow folder alongside grow mode's uncommitted work.
+
+- What is recorded: the picture as on screen (mirrored as shown, the whole 640×480 frame),
+  without the mask overlay and the panel. With the overlay off, each display frame is copied
+  from the screen canvas, at most 30 a second; with it on, the picture is drawn a second time
+  without it (`Pipeline.render(ctx, false)`). The effects' `render` works from elapsed time, so
+  a second call in the same frame changes nothing.
+- `DebugPanel.addAction` now returns its button (for the changing label).
+
+Checked in headless Chrome with the moving clip as webcam (MI-GAN, mask overlay on while
+recording): an H.264 MP4, 640×480, 4.5 s for a 4.2 s tap-to-tap recording, about 29 fps,
+4.1 Mb/s; a frame from it shows the clean after picture, mirrored, with no overlay, box or panel,
+while the screen showed all three. Display stayed at 60 fps. "Save last recording" started a
+second download; automatic stop with `?recordMax=3`, started with `V`, gave a 3 s file. The
+iPad recording test was run again after the move: same results. No console errors.
