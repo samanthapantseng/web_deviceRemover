@@ -2,10 +2,11 @@ import './style.css';
 import { openCamera, openStill, type CameraFacing, type FrameSource } from './camera';
 import { YoloSegDetector } from './detect/yoloSeg';
 import { report, reporting, startReporting, wasmMemoryMB } from './devReport';
+import { GrowEffect } from './effects/grow';
 import { RemoveEffect } from './effects/remove';
 import { FillSet } from './fill';
 import { Pipeline } from './pipeline';
-import { FILL_ORDER, SettingsStore, STYLE_ORDER } from './settings';
+import { FILL_ORDER, MODE_ORDER, SettingsStore, STYLE_ORDER, type ModeId } from './settings';
 import { downloadPng, sideBySide, timestamp } from './snapshot';
 import { openRemote, type RemoteSource } from './stream/remoteSource';
 import { DebugPanel, isTouchDevice } from './ui/panel';
@@ -78,7 +79,11 @@ async function main(): Promise<void> {
   // ?camera=front|back   which camera, without changing the saved setting
   // ?runFor=<seconds>    stop processing after that long (for memory and timing tests)
   // ?fill=migan|telea|stylised   start with that fill, without changing the saved setting
+  // ?mode=remove|grow            start in that mode, without changing the saved setting
   const params = new URLSearchParams(location.search);
+  const modeParam = params.get('mode') as ModeId | null;
+  if (modeParam && MODE_ORDER.includes(modeParam)) settings.mode = modeParam;
+  panel.refresh();
   const fillParam = params.get('fill') as (typeof FILL_ORDER)[number] | null;
   if (fillParam && FILL_ORDER.includes(fillParam)) settings.fill = fillParam;
   const still = params.get('src');
@@ -118,9 +123,14 @@ async function main(): Promise<void> {
 
   const detector = new YoloSegDetector();
   const fills = new FillSet();
-  const effect = new RemoveEffect(source.width, source.height, fills);
-  const pipeline = new Pipeline(source, detector, effect, settings);
-  pipeline.debugRect = () => effect.rect;
+  const remove = new RemoveEffect(source.width, source.height, fills);
+  const grow = new GrowEffect(source.width, source.height);
+  const effectFor = (mode: ModeId) => (mode === 'grow' ? grow : remove);
+  const pipeline = new Pipeline(source, detector, effectFor(settings.mode), settings);
+  pipeline.debugRect = () => (pipeline.activeEffect === remove ? remove.rect : null);
+  store.onChange((_s, key) => {
+    if (key === 'mode') pipeline.setEffect(effectFor(settings.mode));
+  });
 
   // 2. Display loop: screen rate, independent of how fast the models run.
   let displayFps = 0;
@@ -141,7 +151,7 @@ async function main(): Promise<void> {
       rejected: st.rejected,
       held: st.held,
       detector: `${model} · ${detector.backend}`,
-      fill: effect.describe(),
+      effect: pipeline.activeEffect.describe(),
       source: source.label,
     };
   };
@@ -177,6 +187,9 @@ async function main(): Promise<void> {
           store.set('style', STYLE_ORDER[(STYLE_ORDER.indexOf(settings.style) + 1) % STYLE_ORDER.length]);
         }
         store.set('fill', 'stylised');
+        break;
+      case 'g':
+        store.set('mode', settings.mode === 'grow' ? 'remove' : 'grow');
         break;
       case 'm':
         store.set('showMask', !settings.showMask);
@@ -229,12 +242,15 @@ async function main(): Promise<void> {
   const runFor = Number(params.get('runFor'));
   if (runFor > 0) setTimeout(() => (pipeline.stop(), say(`stopped after ${runFor} s (?runFor)`)), runFor * 1000);
   // Only the fill in use is loaded; another one loads when it is picked (stylised meanwhile).
-  say(`loading ${fills.get(settings.fill).label}…`);
+  // Grow mode needs no fill: it is loaded when remove mode is switched on.
   await fills.ensure('stylised');
-  await fills.ensure(settings.fill);
+  if (settings.mode === 'remove') {
+    say(`loading ${fills.get(settings.fill).label}…`);
+    await fills.ensure(settings.fill);
+  }
   say('');
   store.onChange((_s, key) => {
-    if (key === 'fill') void fills.ensure(settings.fill).then(reportFills);
+    if ((key === 'fill' || key === 'mode') && settings.mode === 'remove') void fills.ensure(settings.fill).then(reportFills);
   });
   function reportFills(): void {
     const states = FILL_ORDER.map((id) => {
@@ -248,7 +264,20 @@ async function main(): Promise<void> {
   setTimeout(() => hint.classList.add('hidden'), isTouchDevice ? 10000 : 6000);
 
   // Exposed for timing runs from the console / automated checks.
-  Object.assign(window, { deviceRemover: { pipeline, effect, detector, store, displayFps: () => displayFps } });
+  // `effect` is the one in use; `remove` and `grow` are both modes' effects.
+  Object.assign(window, {
+    deviceRemover: {
+      pipeline,
+      get effect() {
+        return pipeline.activeEffect;
+      },
+      remove,
+      grow,
+      detector,
+      store,
+      displayFps: () => displayFps,
+    },
+  });
 }
 
 void main();

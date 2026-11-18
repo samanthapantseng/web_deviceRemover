@@ -9,7 +9,9 @@
 //   BASE=http://localhost:4173/ npm run check -- captures/clip_moving.y4m   # against `npm run preview`
 //   BASE=https://localhost:8443/ npm run check -- captures/clip_moving.y4m  # against `npm run dev:ipad`
 //
-// Also writes captures/check_sheet.jpg (8 consecutive views, MI-GAN) and captures/check_before_after.jpg.
+// Also writes captures/check_sheet.jpg (8 consecutive views, MI-GAN), captures/check_before_after.jpg
+// and captures/check_grow_sheet.jpg (grow mode, growing over 3 s: 4 views 1 s apart, then 4
+// consecutive views at full size, to see wobble).
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -94,6 +96,41 @@ try {
     pair.height = H;
     pair.getContext('2d').drawImage(snap.before, 0, 0);
     pair.getContext('2d').drawImage(snap.after, W, 0);
+
+    // Grow mode: a fresh start (the tracker watches again), growing to full size in 3 s.
+    dr.store.set('growSeconds', 3);
+    dr.pipeline.tracker.reset();
+    dr.store.set('mode', 'grow');
+    const grow = document.createElement('canvas');
+    grow.width = W * 4;
+    grow.height = H * 2;
+    const gc = grow.getContext('2d');
+    gc.font = '14px monospace';
+    gc.fillStyle = '#ff0';
+    const label = (i) => gc.fillText(dr.effect.describe().replace(/^.* · now /, ''), (i % 4) * W + 6, Math.floor(i / 4) * H + 16);
+    for (let i = 0; i < 4; i++) {
+      await sleep(1000);
+      gc.drawImage(view, i * W, 0);
+      label(i);
+    }
+    await sleep(1500);
+    for (let i = 4; i < 8; i++) {
+      gc.drawImage(view, (i - 4) * W, H);
+      label(i);
+      await sleep(150);
+    }
+    await sleep(3000);
+    const g = dr.pipeline.stats;
+    rows.push({
+      fill: dr.effect.describe(),
+      'display fps': Math.round(dr.displayFps()),
+      'fill fps': +g.pipelineFps.toFixed(1),
+      'detect ms': +g.detectMs.toFixed(1),
+      'mask ms': +g.maskMs.toFixed(2),
+      'inpaint ms': +g.effectMs.toFixed(1),
+      phones: g.phones,
+      score: +g.bestScore.toFixed(2),
+    });
     return {
       browser: navigator.userAgent.replace(/.*((?:Headless)?Chrome\/[\d.]+).*/, '$1'),
       frame: `${W}×${H}`,
@@ -101,16 +138,18 @@ try {
       rows,
       sheet: sheet.toDataURL('image/jpeg', 0.88),
       pair: pair.toDataURL('image/jpeg', 0.92),
+      grow: grow.toDataURL('image/jpeg', 0.88),
     };
   });
 
   const save = (name, dataUrl) => writeFileSync(join(outDir, name), Buffer.from(dataUrl.split(',')[1], 'base64'));
   save('check_sheet.jpg', result.sheet);
   save('check_before_after.jpg', result.pair);
+  save('check_grow_sheet.jpg', result.grow);
   console.log(`${result.browser} · frame ${result.frame} · detector on ${result.detector}`);
   console.table(result.rows);
   console.log(problems.length ? `problems:\n  ${problems.join('\n  ')}` : 'no console errors');
-  console.log('wrote captures/check_sheet.jpg and captures/check_before_after.jpg');
+  console.log('wrote captures/check_sheet.jpg, captures/check_before_after.jpg and captures/check_grow_sheet.jpg');
   process.exitCode = problems.length ? 1 : 0;
 } finally {
   await browser.close();

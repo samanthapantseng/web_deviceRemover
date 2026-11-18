@@ -46,6 +46,8 @@ export interface Verdict {
   ageMs: number;
   /** Share of recent frames in which it looked like a phone, 0..1. */
   share: number;
+  /** ms since it was decided on (erased); 0 while it is not. Grow mode sizes the phone by this. */
+  erasedMs: number;
 }
 
 interface Track {
@@ -58,6 +60,8 @@ interface Track {
   votes: { t: number; yes: boolean }[];
   share: number;
   erased: boolean;
+  /** When it was last decided on. */
+  erasedAt: number;
 }
 
 /** > 0 when two boxes could be the same object one frame apart; the higher, the closer. */
@@ -99,7 +103,7 @@ export class PhoneTracker {
     // 2. Anything left over is a new object: start watching it.
     seen.forEach((s, si) => {
       if (trackOf[si]) return;
-      const t: Track = { id: this.nextId++, box: s, firstSeen: now, lastSeen: now, missed: 0, votes: [], share: 0, erased: false };
+      const t: Track = { id: this.nextId++, box: s, firstSeen: now, lastSeen: now, missed: 0, votes: [], share: 0, erased: false, erasedAt: 0 };
       this.tracks.push(t);
       matched.add(t);
       trackOf[si] = t;
@@ -126,11 +130,19 @@ export class PhoneTracker {
     for (const t of this.tracks) {
       while (t.votes.length && t.votes[0].t < now - window) t.votes.shift();
       t.share = t.votes.length ? t.votes.filter((v) => v.yes).length / t.votes.length : 0;
-      if (!t.erased) t.erased = now - t.firstSeen >= o.watchMs && t.share >= o.share;
-      else if (t.share < o.share / 2) t.erased = false;
+      if (!t.erased) {
+        t.erased = now - t.firstSeen >= o.watchMs && t.share >= o.share;
+        if (t.erased) t.erasedAt = now;
+      } else if (t.share < o.share / 2) t.erased = false;
     }
 
-    return trackOf.map((t) => ({ id: t!.id, erase: t!.erased, ageMs: now - t!.firstSeen, share: t!.share }));
+    return trackOf.map((t) => ({
+      id: t!.id,
+      erase: t!.erased,
+      ageMs: now - t!.firstSeen,
+      share: t!.share,
+      erasedMs: t!.erased ? now - t!.erasedAt : 0,
+    }));
   }
 
   /**
