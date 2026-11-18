@@ -7,7 +7,8 @@ Everything runs in the browser, on the device. No frame leaves the machine, and 
 saved unless you press the snapshot key.
 
 ```
-camera → YOLO11-seg (phone mask) → mask stabiliser → fill (MI-GAN / Telea / stylised) → composite
+camera → YOLO11-seg (phone-like objects) → tracker (watch 1.5 s, then decide) → mask stabiliser
+       → fill (MI-GAN / Telea / stylised) → composite
 ```
 
 ## Setup
@@ -36,16 +37,18 @@ Then open <http://localhost:5173/> in Chrome and allow the camera.
 | Key | |
 |---|---|
 | `1` `2` `3` | fill mode: MI-GAN, Telea, stylised (press `3` again to step through blur / flat / void) |
-| `M` | mask overlay: mask in magenta, detection box in yellow, inpaint window in cyan |
+| `M` | mask overlay: mask in magenta, erased objects in yellow, objects being watched in orange (dashed), objects decided against in grey (dashed), inpaint window in cyan |
 | `S` | snapshot: before and after of the same frame, side by side, as a PNG download |
 | `F` | fullscreen |
 | `D` | debug panel |
 | `X` | mirror |
 | double-tap | debug panel, on a touch screen (it has buttons for snapshot and fullscreen) |
 
-The debug panel shows display fps, fill fps, detection / mask / inpaint times and the active
-backend, and has sliders for confidence, dilation, feather, hold frames, mask persistence,
-inpaint crop size and fill smoothing, and a front / back camera choice (for a tablet).
+The debug panel shows display fps, fill fps, detection / mask / inpaint times, the active
+backend and what the tracker is watching (e.g. `#4 watching 1.2/1.5 s · 80 %`: object 4, seen
+for 1.2 s, looked like a phone in 80 % of its frames). It has sliders for confidence, watch
+time, the share of frames needed, dilation, feather, hold frames, mask persistence, inpaint
+crop size and fill smoothing, and a front / back camera choice (for a tablet).
 Settings are remembered in the browser. The screen is kept awake while the page is open.
 
 ## Testing on the iPad
@@ -165,13 +168,33 @@ yolo11s-seg. The same pipeline in a visible Chromium window displayed at 120 fps
 
 Not yet measured: a real webcam with a real person, and the iPad.
 
+## Watching before erasing
+
+Nothing is erased the moment it is detected. Each object that looks even slightly like a
+phone (phone score at least half the threshold) is followed from frame to frame, also while it
+moves (`src/detect/tracker.ts`). Every processed frame casts a vote: "phone" if "cell phone" is
+its top category and scores at least the confidence threshold (0.70), otherwise "not phone";
+a frame in which the object is not found also counts as "not phone".
+
+- **Watching**: a new object is left alone for 1.5 s ("Watch a new object for" in the panel).
+- **Deciding**: then it is erased if at least 67 % of its frames over the last 1.5 s said phone
+  ("Erase if phone in at least").
+- **Staying erased**: from then on it is erased in every frame it is found in, whatever that
+  frame's score, until fewer than half that share (33 %) of its last 1.5 s say phone. Half, so
+  an object right at the bar does not switch on and off. (The look-back is the watch time, but
+  at least 1 s.)
+- **Short losses**: an object out of sight for up to 1 s (a hand passing in front) keeps its
+  status. After longer, it is forgotten, and if it comes back it is watched again from the start.
+
+So every phone stays visible for about 1.5 s after it appears or comes back. A look-alike that
+scores high for under about 1 s and then drops is never erased; one that stays high for longer
+than two thirds of the watch time is. Setting the watch time to 0 erases at
+once (the earlier behaviour, without the earlier blinking).
+
 ## How flicker is kept down
 
-- **Detection hysteresis, with re-confirmation**: a new phone needs the full confidence
-  threshold (default 0.70). Once found, it stays counted down to half the threshold, but only
-  for 1.5 s after it last reached the full threshold ("Weaker score may carry a phone for" in
-  the panel). After that it has to be confirmed again, so a look-alike that scored high once
-  does not stay "a phone" for good.
+- **Per-object decisions**: see above. An erased object stays erased through frames where its
+  score dips, and a look-alike's brief high score does not erase it.
 - **Hold**: when detection drops out, the last mask is frozen for N frames (default 5), then
   the fill fades out over 180 ms.
 - **Mask persistence**: a pixel that was phone stays masked for 150 ms, so a wobbling mask
@@ -190,7 +213,13 @@ Not yet measured: a real webcam with a real person, and the iPad.
   only counts as a phone if "cell phone" is its best guess among all 80 (the top-category
   check, on by default). Objects it has no category for can still come out as "cell phone":
   on the real camera, a black wallet held upright scored 0.90, next to 0.94 for a real phone,
-  so no threshold separates those two.
+  so no threshold separates those two. Watching (above) stops look-alikes that score high only
+  for a moment; one that the model is steadily sure about, like that wallet, is still erased
+  after the 1.5 s.
+- **A phone is visible for its first 1.5 s** in view, and again for 1.5 s when it comes back after
+  more than 1 s out of sight. A phone the model is sure about in fewer than 67 % of frames is
+  not erased at all; lowering "Erase if phone in at least" lets it through, along with more
+  look-alikes.
 - **Phones seen from far away or at odd angles are missed.** The detector knows COCO's
   "cell phone" class. In one test photo a phone about 30 px tall was not found.
   `yolo11n-seg` found a dark phone in 59 % of frames of a moving test clip; `yolo11s-seg`
@@ -203,7 +232,7 @@ Not yet measured: a real webcam with a real person, and the iPad.
   of its window it paints objects into the hand; keeping the hole under about 15 % of the
   window (the default) avoids most of it. Results vary with camera noise.
 - **The fill is one cycle behind** (about 70 ms with MI-GAN). A fast-moving phone can peek out
-  at the edges, and a phone entering the frame is visible for one cycle. "Sync display to
+  at the edges, and with the watch time at 0 a phone entering the frame is visible for one cycle. "Sync display to
   fill" in the debug panel trades this for a lagging picture.
 - **After a phone leaves, the patch lingers** for about half a second (hold, then fade).
 - **640×480** processing and display resolution.
@@ -222,6 +251,7 @@ src/
   pipeline.ts        camera frame → detector → mask → effect, on its own async loop
   camera.ts          webcam and stand-in frame sources
   detect/yoloSeg.ts  YOLO11-seg inference and mask decoding
+  detect/tracker.ts  follows each phone-like object and decides whether it is erased
   mask/              temporal stabiliser, distance field, inpaint-window tracker
   effects/           Effect interface; remove.ts is the erase effect
   fill/              Fill interface; migan.ts, telea.ts, stylised.ts

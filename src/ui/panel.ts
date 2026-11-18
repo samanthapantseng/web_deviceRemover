@@ -9,8 +9,8 @@ export interface PanelStats {
   inpaintMs: number;
   phones: number;
   bestScore: number;
+  objects: string[];
   rejected: string;
-  confirmedAgo: number;
   held: boolean;
   detector: string;
   fill: string;
@@ -50,7 +50,8 @@ export class DebugPanel {
     this.select('style', 'Stylised variant', STYLE_ORDER, (v) => v);
     this.slider('confidence', 'Confidence threshold', 0.05, 0.9, 0.01, (v) => v.toFixed(2));
     this.checkbox('topClassOnly', 'Phone must be the top category');
-    this.slider('reconfirmMs', 'Weaker score may carry a phone for', 0, 5000, 100, (v) => `${(v / 1000).toFixed(1)} s`);
+    this.slider('watchMs', 'Watch a new object for', 0, 6000, 500, (v) => (v ? `${(v / 1000).toFixed(1)} s` : 'no wait'));
+    this.slider('watchShare', 'Erase if phone in at least', 0.3, 1, 0.01, (v) => `${Math.round(v * 100)} % of frames`);
     this.slider('dilate', 'Mask dilation', 0, 40, 1, (v) => `${v} px`);
     this.slider('feather', 'Edge feather', 0, 30, 1, (v) => `${v} px`);
     this.slider('holdFrames', 'Hold frames on dropout', 0, 30, 1, (v) => `${v}`);
@@ -103,7 +104,9 @@ export class DebugPanel {
       `detect   ${ms(s.detectMs)}  (model ${s.inferMs.toFixed(1)})`,
       `mask     ${ms(s.maskMs)}`,
       `inpaint  ${ms(s.inpaintMs)}`,
-      `phones    ${s.phones}${s.phones ? `  score ${s.bestScore.toFixed(2)}  sure ${(s.confirmedAgo / 1000).toFixed(1)} s ago` : ''}${s.held ? '  (holding)' : ''}`,
+      `erased    ${s.phones}${s.phones ? `  score ${s.bestScore.toFixed(2)}` : ''}${s.held ? '  (holding)' : ''}`,
+      // One line per object followed: state and the share of its recent frames that said phone.
+      ...(s.objects.length ? s.objects : ['–']).map((line, i) => `${i ? '          ' : 'objects   '}${line}`),
       `not phone ${s.rejected || '–'}`,
       `detector  ${s.detector}`,
       `fill      ${s.fill}`,

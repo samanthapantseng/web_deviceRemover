@@ -8,7 +8,8 @@
 // the input side is read from the model. A detection's mask is sigmoid(coefficients · prototypes),
 // cropped to its box and upsampled.
 import { createSession, fetchModel, modelUrl, type Backend, type Model, type Outputs } from '../runtime/ort';
-import { clamp, makeCanvas, type Rect } from '../types';
+import { clamp, iou, makeCanvas, type Rect } from '../types';
+import type { Sighting } from './tracker';
 
 const DEFAULT_SIZE = 640;
 const NUM_CLASSES = 80;
@@ -28,18 +29,10 @@ export const COCO_NAMES = [
   'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush',
 ] as const;
 
-export interface PhoneBox {
-  /** Frame pixels. */
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  /** The model's "cell phone" score. */
-  score: number;
+/** One phone-like object in one frame (frame pixels). */
+export interface PhoneBox extends Sighting {
   /** The strongest other category for the same region, e.g. { name: 'remote', score: 0.2 }. */
   next: { name: string; score: number };
-  /** When this phone last scored at or above the full threshold (performance.now() ms). */
-  confirmedAt: number;
 }
 
 /** Something that scored as a phone but that the model thinks is something else (top-category check). */
@@ -55,31 +48,32 @@ export interface RejectedBox {
 }
 
 export interface DetectOptions {
-  /** Minimum score for a detection with no history. */
+  /** Score at which a single frame says "phone". */
   conf: number;
-  /**
-   * Boxes accepted on the previous frame. A candidate overlapping one of these is kept down to
-   * half the threshold (hysteresis), so a phone hovering around the threshold does not blink;
-   * but only while that phone was confirmed (at or above the full threshold) within `reconfirmMs`.
-   */
-  prior?: PhoneBox[];
-  /** How long a weaker score may carry a phone after its last confident detection. Default: no limit. */
-  reconfirmMs?: number;
-  /** Timestamp for this frame (performance.now() ms). */
-  now?: number;
+  /** Lowest phone score at which an object is reported at all (default: `conf`). */
+  floor?: number;
   /**
    * Only count a region as a phone if "cell phone" is the model's highest score of all 80
    * categories for it. Without this a book scoring "book 0.8, cell phone 0.3" counts as a phone.
    */
   topClassOnly?: boolean;
+  /** At most this many objects are reported per frame. */
   maxDetections?: number;
+  /**
+   * Decides which of this frame's objects are erased (their masks painted), e.g. by watching
+   * them over time (tracker.ts). Default: those whose top category is phone, at or above `conf`.
+   */
+  choose?: (seen: PhoneBox[]) => boolean[];
 }
 
 export interface Detection {
+  /** The objects that are erased: their masks are in `mask`. */
   boxes: PhoneBox[];
+  /** Every phone-like object found (phone score at least `floor`), strongest first. */
+  seen: PhoneBox[];
   /** Up to 3 look-alikes turned away by the top-category check, strongest first (for diagnosis). */
   rejected: RejectedBox[];
-  /** Frame-sized, 1 where any phone is. Reused between calls: read it before the next detect(). */
+  /** Frame-sized, 1 where an erased object is. Reused between calls: read it before the next detect(). */
   mask: Uint8Array;
   /** Bounding box of the mask, or null when it is empty. */
   bounds: Rect | null;
@@ -111,14 +105,6 @@ function inputSide(loaded: Model, model: string): number {
   if (typeof side === 'number' && side > 0) return side;
   const fromName = /-(\d+)$/.exec(model);
   return fromName ? Number(fromName[1]) : DEFAULT_SIZE;
-}
-
-function iou(a: { x1: number; y1: number; x2: number; y2: number }, b: typeof a): number {
-  const w = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
-  const h = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
-  if (w <= 0 || h <= 0) return 0;
-  const inter = w * h;
-  return inter / ((a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter);
 }
 
 export class YoloSegDetector {
@@ -179,11 +165,9 @@ export class YoloSegDetector {
     const protos = out.output1.data as Float32Array;
     const proto = out.output1.dims[2];
 
-    // Candidates: regions with a "cell phone" score at least at the lower (hysteresis) threshold.
+    // Candidates: regions with a "cell phone" score of at least the floor.
     const topOnly = opts.topClassOnly ?? true;
-    const now = opts.now ?? performance.now();
-    const prior = opts.prior ?? [];
-    const lowConf = prior.length ? Math.max(0.05, opts.conf * 0.5) : opts.conf;
+    const lowConf = opts.floor ?? opts.conf;
     const phoneRow = (4 + COCO_CELL_PHONE) * anchors;
     const candidates: Candidate[] = [];
     for (let i = 0; i < anchors; i++) {
@@ -211,42 +195,36 @@ export class YoloSegDetector {
     if (this.mask.length !== width * height) this.mask = new Uint8Array(width * height);
     else this.mask.fill(0);
 
-    // Greedy NMS, one decision per object, then paint each accepted mask. With the top-category
-    // check the strongest reading of an object wins for the whole object: a book whose best
-    // region says "book" is not let through by a neighbouring region that happens to say "phone".
+    // Greedy NMS: one entry per object. With the top-category check the strongest reading of an
+    // object stands for the whole object: a book whose best region says "book" is not let
+    // through by a neighbouring region that happens to say "phone".
     const kept: Candidate[] = [];
-    const boxes: PhoneBox[] = [];
+    const seen: PhoneBox[] = [];
     const rejected: RejectedBox[] = [];
-    const maxDet = opts.maxDetections ?? 4;
-    const toFrame = (c: Candidate) => ({
-      x1: clamp((c.x1 - padX) / scale, 0, width),
-      y1: clamp((c.y1 - padY) / scale, 0, height),
-      x2: clamp((c.x2 - padX) / scale, 0, width),
-      y2: clamp((c.y2 - padY) / scale, 0, height),
-    });
+    const maxDet = opts.maxDetections ?? 8;
     for (const c of candidates) {
-      if (boxes.length >= maxDet) break;
+      if (kept.length >= maxDet) break;
       if (kept.some((k) => iou(k, c) > 0.5)) continue;
       kept.push(c);
-      const rect = toFrame(c);
-      if (topOnly && c.rivalScore > c.score) {
-        if (rejected.length < 3) rejected.push({ ...rect, score: c.score, top: { name: COCO_NAMES[c.rival], score: c.rivalScore } });
-        continue;
-      }
-      // Below the threshold a region only counts as the continuation of a phone that was
-      // confirmed recently; otherwise it has to score at or above the threshold again.
-      let confirmedAt = now;
-      if (c.score < opts.conf) {
-        let last = -Infinity;
-        for (const p of prior) if (iou(p, rect) > 0.3) last = Math.max(last, p.confirmedAt);
-        if (now - last > (opts.reconfirmMs ?? Infinity)) continue;
-        confirmedAt = last;
-      }
-      const next = { name: COCO_NAMES[c.rival] ?? '–', score: c.rivalScore };
-      const box: PhoneBox = { ...rect, score: c.score, next, confirmedAt };
-      boxes.push(box);
-      this.paintMask(pred, anchors, protos, proto, size / proto, c, box, width, height, scale, padX, padY);
+      const rect = {
+        x1: clamp((c.x1 - padX) / scale, 0, width),
+        y1: clamp((c.y1 - padY) / scale, 0, height),
+        x2: clamp((c.x2 - padX) / scale, 0, width),
+        y2: clamp((c.y2 - padY) / scale, 0, height),
+      };
+      const phoneIsTop = !topOnly || c.score >= c.rivalScore;
+      seen.push({ ...rect, score: c.score, phoneIsTop, next: { name: COCO_NAMES[c.rival] ?? '–', score: c.rivalScore } });
+      if (!phoneIsTop && rejected.length < 3) rejected.push({ ...rect, score: c.score, top: { name: COCO_NAMES[c.rival], score: c.rivalScore } });
     }
+
+    // Which objects are erased, then paint only their masks.
+    const erase = opts.choose ? opts.choose(seen) : seen.map((s) => s.phoneIsTop && s.score >= opts.conf);
+    const boxes: PhoneBox[] = [];
+    seen.forEach((box, i) => {
+      if (!erase[i]) return;
+      boxes.push(box);
+      this.paintMask(pred, anchors, protos, proto, size / proto, kept[i], box, width, height, scale, padX, padY);
+    });
 
     let bounds: Rect | null = null;
     if (boxes.length) {
@@ -264,7 +242,7 @@ export class YoloSegDetector {
     }
 
     const t3 = performance.now();
-    return { boxes, rejected, mask: this.mask, bounds, preMs: t1 - t0, inferMs: t2 - t1, postMs: t3 - t2 };
+    return { boxes, seen, rejected, mask: this.mask, bounds, preMs: t1 - t0, inferMs: t2 - t1, postMs: t3 - t2 };
   }
 
   /** Decode one detection's mask straight into the frame-sized mask, inside its box only. */

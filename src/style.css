@@ -77,7 +77,8 @@ textarea {
   position: fixed;
   top: 12px;
   right: 12px;
-  width: 300px;
+  width: 340px;
+  max-width: calc(100vw - 24px);
   max-height: calc(100vh - 24px);
   overflow-y: auto;
   padding: 12px;
@@ -163,7 +164,7 @@ textarea {
 /* Touch screens: bigger targets; 16 px controls also stop Safari zooming in on a tapped <select>. */
 @media (pointer: coarse) {
   .panel {
-    width: 360px;
+    width: 390px;
     font-size: 14px;
   }
 

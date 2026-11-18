@@ -5,6 +5,23 @@ export interface Rect {
   h: number;
 }
 
+/** A box by its corners, in frame pixels. */
+export interface Box {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+/** Intersection over union of two boxes: 0 apart, 1 identical. */
+export function iou(a: Box, b: Box): number {
+  const w = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+  const h = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+  if (w <= 0 || h <= 0) return 0;
+  const inter = w * h;
+  return inter / ((a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter);
+}
+
 export interface CanvasPair {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;

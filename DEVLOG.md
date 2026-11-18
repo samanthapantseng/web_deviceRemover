@@ -317,6 +317,80 @@ Checked on the moving clip, frame by frame (fill: stylised):
 The first row is the reported problem: carried for 11.5 s without ever being sure. With the
 window, a phone that is sure about a third of the time stays counted 99 % of the time.
 
+### Watching before erasing (replaces re-confirmation)
+
+From the user, after trying re-confirmation live: a wallet or pencil case was erased at once,
+then let go a few seconds later; they did not like that confusion. They asked for the machine
+to watch an object for at least 3 s, then decide, accepting that phones are no longer erased
+immediately.
+
+Change (`src/detect/tracker.ts`): the detector now reports every phone-like object (phone
+score at least half the threshold, top category or not) and the tracker decides which ones are
+erased; only their masks are painted. Objects are matched frame to frame by overlap or nearby
+centre, so a moving phone keeps its identity. Each processed frame is a vote: "phone" when phone
+is the top category at or above the threshold, else "not phone" (also when not found).
+
+- Erased once the object is 3 s old and at least 67 % of its last 3 s of votes said phone.
+- Stays erased in every frame it is found, whatever the score, until fewer than 33 % (half the
+  bar) of its last 3 s said phone. My choice, to stop an object right at the bar switching on
+  and off.
+- Unseen for up to 1 s (and at least two frames, for slow devices): keeps its status. Longer:
+  forgotten, watched again from the start when it returns.
+- Panel: "Watch a new object for" (0 to 6 s; 0 erases at once) and "Erase if phone in at least"
+  (30 to 100 %) replace "Weaker score may carry a phone for"; a line per object followed, e.g.
+  `#4 watching 1.2/3.0 s · 80 %`. The mask overlay draws watched objects dashed orange and
+  objects decided against dashed grey. Saved settings that no longer exist are dropped on load.
+
+Checked with synthetic detections at 15 fps (the tracker on its own, in Node):
+
+| case | result |
+|---|---|
+| phone 0.93, moving | erased at 3.04 s, then every frame, no switching |
+| wallet 0.90 for 0.6 s, then 0.40 | never erased |
+| wallet steady at 0.90 | erased at 3.04 s (the known limit) |
+| phone, hand covers it for 0.6 s | same object, stays erased |
+| phone gone 2 s, back | new object, erased 3.04 s after it returns |
+| phone sure in 75 % of frames | erased at 3.04 s, no switching |
+| phone sure in 55 % of frames | never erased (erased at 3.04 s with the bar at 50 %) |
+| phone next to a wallet at 0.40 | phone erased, wallet not |
+| phone jumping 70 px per frame | one object, erased at 3.04 s |
+| book: phone 0.36, laptop higher | never erased |
+| erased phone turns into "book" | let go about 2 s later |
+| 1 fps, phone 0.93 | erased at 3.0 s |
+
+And live on the moving clip (headless Chrome, stylised fill, 10 s per row, tracker reset
+before each):
+
+| threshold | watch | bar | frames sure | first erased | erased from then on | on/off switches |
+|---|---|---|---|---|---|---|
+| 0.70 | 3 s | 67 % | 100 % | 3.05 s | 100 % | 1 |
+| 0.88 | 3 s | 67 % | 39 % | never | – | 0 |
+| 0.88 | 3 s | 30 % | 33 % | 3.14 s | 100 % | 1 |
+| 0.92 | 3 s | 67 % | 0 % | never | – | 0 |
+| 0.70 | 0 s | 67 % | 99 % | at once | 100 % | 0 |
+
+Timings unchanged (detect 25 ms, MI-GAN 46 ms, 13.5 fills per second); `npm run stills` gives
+the same scores as before.
+
+### 2026-11-18 · watch time 1.5 s
+
+The user found 3 s far too long; the default is now 1.5 s (the look-back for the vote is then
+1.5 s as well). Rechecked:
+
+| case | at 3 s | at 1.5 s |
+|---|---|---|
+| clip, threshold 0.70 | erased at 3.05 s, no switching | erased at 1.53 s, no switching |
+| clip, threshold 0.88 (sure in 38 % of frames) | never | never |
+| wallet 0.90 for 0.6 s, then 0.40 | never | never |
+| wallet 0.90 for 1.2 s, then 0.40 | never | erased at 1.5 s, let go about 1 s later |
+| phone sure in 55 % of frames (random) | never | erased after 5.9 s, switched on and off twice |
+| phone gone 2 s, back | erased 3.0 s after return | erased 1.5 s after return |
+| real 1 fps | erased at 3.0 s | erased at 2.0 s (two frames) |
+
+What the shorter watch costs: a look-alike that stays high for more than about 1 s can be
+erased and then let go, and over the shorter look-back an object right at the bar switches more
+often, because fewer frames are averaged.
+
 ### Open
 
 - Decision for the user: keep hunting the Safari leak (uncertain; even fixed, the 2018 iPad

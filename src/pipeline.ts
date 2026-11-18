@@ -1,4 +1,5 @@
 import type { FrameSource } from './camera';
+import { PhoneTracker, type Verdict } from './detect/tracker';
 import type { PhoneBox, YoloSegDetector } from './detect/yoloSeg';
 import type { Effect } from './effects/types';
 import { AlphaCanvas } from './mask/alphaCanvas';
@@ -15,12 +16,13 @@ export interface PipelineStats {
   maskMs: number;
   /** Time spent in the effect (inpainting). 0 while no phone is visible. */
   effectMs: number;
+  /** Objects erased in the last frame, and the best phone score among them. */
   phones: number;
   bestScore: number;
+  /** What the tracker is watching, e.g. "#4 watching 1.2/1.5 s · 80 %", erased first. */
+  objects: string[];
   /** The strongest look-alike turned away by the top-category check, e.g. "book 0.80 (phone 0.31)". */
   rejected: string;
-  /** ms since the best phone last scored at or above the threshold (0 when it just did). */
-  confirmedAgo: number;
   held: boolean;
 }
 
@@ -46,20 +48,22 @@ export class Pipeline {
     effectMs: 0,
     phones: 0,
     bestScore: 0,
+    objects: [],
     rejected: '',
-    confirmedAgo: 0,
     held: false,
   };
   /** Set to see the context window in the mask overlay. */
   debugRect: () => Rect | null = () => null;
+  /** Watches each phone-like object before deciding to erase it. */
+  readonly tracker = new PhoneTracker();
 
   private frames: [CanvasPair, CanvasPair];
   private front = 0;
   private stabilizer: MaskStabilizer;
   private alphaCanvas: AlphaCanvas;
   private maskViz: CanvasPair;
-  private boxes: PhoneBox[] = [];
-  private prior: PhoneBox[] = [];
+  /** This frame's phone-like objects and what the tracker decided about each (mask overlay). */
+  private seen: { box: PhoneBox; verdict: Verdict }[] = [];
   private mask: StableMask | null = null;
   private running = false;
   private tickMs = 60;
@@ -110,11 +114,17 @@ export class Pipeline {
     const frame = this.frames[back];
     frame.ctx.drawImage(this.source.element, 0, 0, width, height);
 
+    // Every object that looks even slightly like a phone (half the threshold) goes to the
+    // tracker; only the ones it has decided on are erased.
+    let verdicts: Verdict[] = [];
     const det = await this.detector.detect(frame.canvas, width, height, {
       conf: s.confidence,
-      prior: this.prior,
+      floor: Math.max(0.05, s.confidence * 0.5),
       topClassOnly: s.topClassOnly,
-      reconfirmMs: s.reconfirmMs,
+      choose: (seen) => {
+        verdicts = this.tracker.update(seen, performance.now(), { conf: s.confidence, watchMs: s.watchMs, share: s.watchShare });
+        return verdicts.map((v) => v.erase);
+      },
     });
 
     const t0 = performance.now();
@@ -127,10 +137,7 @@ export class Pipeline {
     this.alphaCanvas.write(mask);
     const maskMs = performance.now() - t0;
 
-    // Hysteresis memory: while the mask is held, keep the last known boxes as "prior".
-    if (det.boxes.length) this.prior = det.boxes;
-    else if (!mask.held) this.prior = [];
-    this.boxes = det.boxes;
+    this.seen = det.seen.map((box, i) => ({ box, verdict: verdicts[i] }));
     this.mask = mask;
     if (s.showMask) this.drawMaskViz();
 
@@ -161,7 +168,7 @@ export class Pipeline {
     st.effectMs = mask.present ? smooth(st.effectMs, effectMs) : 0;
     st.phones = det.boxes.length;
     st.bestScore = det.boxes.reduce((m, b) => Math.max(m, b.score), 0);
-    st.confirmedAgo = det.boxes.length ? now - Math.max(...det.boxes.map((b) => b.confirmedAt)) : 0;
+    st.objects = this.tracker.summary(now, s.watchMs);
     const r = det.rejected[0];
     st.rejected = r ? `${r.top.name} ${r.top.score.toFixed(2)} (phone ${r.score.toFixed(2)})` : '';
     st.held = mask.held;
@@ -223,15 +230,27 @@ export class Pipeline {
         ctx.setLineDash([]);
       }
     }
+    // Erased objects in yellow; objects being watched in orange, dashed; decided against in grey.
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = '#ffe600';
-    ctx.fillStyle = '#ffe600';
     ctx.font = '11px ui-monospace, Menlo, monospace';
-    for (const b of this.boxes) {
+    const watchMs = this.settings.watchMs;
+    for (const { box: b, verdict: v } of this.seen) {
+      if (!v) continue;
+      const pct = `${Math.round(v.share * 100)}%`;
+      const watching = !v.erase && v.ageMs < watchMs;
+      const colour = v.erase ? '#ffe600' : watching ? '#ff9100' : '#9e9e9e';
+      const label = v.erase
+        ? `${b.score.toFixed(2)} · ${pct}`
+        : watching
+          ? `watching ${(v.ageMs / 1000).toFixed(1)} s · ${pct}`
+          : `not erased · ${pct}`;
+      ctx.strokeStyle = colour;
+      ctx.fillStyle = colour;
+      ctx.setLineDash(v.erase ? [] : [5, 4]);
       ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+      ctx.setLineDash([]);
       // Text would come out reversed under the mirror transform, so un-flip it locally.
       ctx.save();
-      const label = b.score.toFixed(2);
       if (this.settings.mirror) {
         ctx.translate(b.x2, b.y1 - 4);
         ctx.scale(-1, 1);
