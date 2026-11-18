@@ -1,7 +1,6 @@
 # Device Remover
 
 A live camera view in which phones are erased from people's hands, leaving the empty pose.
-Critical-design prototype (v0, laptop webcam), inspired by Jonah Brucker-Cohen's *Device Inversions*.
 
 It runs in the browser, in one of two ways (see "Two ways to run it"): on the Mac alone with
 its webcam, or with an iPad as camera and screen while the Mac does the work. Either way no
