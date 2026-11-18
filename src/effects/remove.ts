@@ -56,6 +56,15 @@ export class RemoveEffect implements Effect {
     return text;
   }
 
+  reset(): void {
+    this.present = false;
+    this.opacity = 0;
+    this.memRect = null;
+    this.memKey = '';
+    this.rect = null;
+    this.crop.reset();
+  }
+
   onMask(f: EffectFrame): void {
     this.maskCanvas = f.maskCanvas;
     this.present = f.mask.present;

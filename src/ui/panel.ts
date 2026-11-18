@@ -1,4 +1,4 @@
-import { FILL_ORDER, STYLE_ORDER, type Settings, type SettingsStore } from '../settings';
+import { FILL_ORDER, GROW_SHAPES, MODE_ORDER, STYLE_ORDER, type Settings, type SettingsStore } from '../settings';
 
 export interface PanelStats {
   displayFps: number;
@@ -13,10 +13,18 @@ export interface PanelStats {
   rejected: string;
   held: boolean;
   detector: string;
-  fill: string;
+  /** What the active effect is doing, e.g. "MI-GAN · webgpu" or "grow rectangle 1× → 2× in 5 s". */
+  effect: string;
   source: string;
 }
 
+const MODE_LABELS = { remove: 'remove (erase the phone)', grow: 'grow (inflate the phone)' } as const;
+const SHAPE_LABELS = {
+  hand: 'precise mask + hand (person mask)',
+  mask: 'precise mask + fingers on it',
+  hull: 'convex outline + fingers on it',
+  rectangle: 'rectangle + fingers on it',
+} as const;
 const FILL_LABELS = { migan: '1 · MI-GAN', telea: '2 · Telea (OpenCV)', stylised: '3 · Stylised' } as const;
 const DETECTORS = ['yolo11s-seg', 'yolo11n-seg', 'yolo11s-seg-320', 'yolo11n-seg-320'] as const;
 const DETECTOR_LABELS = {
@@ -46,6 +54,14 @@ export class DebugPanel {
   constructor(private store: SettingsStore) {
     this.root.append(el('div', 'panel-title', 'Device Remover · debug'), this.actions, this.stats);
 
+    this.select('mode', 'Mode (G)', MODE_ORDER, (v) => MODE_LABELS[v]);
+    this.select('growShape', 'Grow: shape', GROW_SHAPES, (v) => SHAPE_LABELS[v]);
+    this.slider('growFill', 'Grow: fill finger gaps (mask, hand)', 0, 0.4, 0.01, (v) => (v ? `${Math.round(v * 100)} % of phone` : 'off: exact mask'));
+    this.slider('growReach', 'Grow: hand reach (hand)', 0, 0.6, 0.01, (v) => (v ? `${Math.round(v * 100)} % of phone` : 'off'));
+    this.slider('growStart', 'Grow: size when picked', 1, 2, 0.05, (v) => `${v.toFixed(2)}×`);
+    this.slider('growMax', 'Grow: final size', 1, 8, 0.25, (v) => `${v}×`);
+    this.slider('growSeconds', 'Grow: time to final size', 2, 120, 1, (v) => `${v} s`);
+    this.slider('growSmoothing', 'Grow: shape smoothing', 0, 0.8, 0.05, (v) => v.toFixed(2));
     this.select('fill', 'Fill mode', FILL_ORDER, (v) => FILL_LABELS[v]);
     this.select('style', 'Stylised variant', STYLE_ORDER, (v) => v);
     this.slider('confidence', 'Confidence threshold', 0.05, 0.9, 0.01, (v) => v.toFixed(2));
@@ -74,7 +90,7 @@ export class DebugPanel {
         'keys',
         isTouchDevice
           ? 'Double-tap the picture to show or hide this panel.'
-          : 'D panel · 1/2/3 fill (3 again: next style) · M mask · X mirror · S snapshot · F fullscreen',
+          : 'D panel · G grow/remove · 1/2/3 fill (3 again: next style) · M mask · X mirror · S snapshot · F fullscreen',
       ),
     );
 
@@ -92,6 +108,11 @@ export class DebugPanel {
     this.root.classList.toggle('hidden');
   }
 
+  /** Show the current settings again (after they were changed without the store, e.g. from the URL). */
+  refresh(): void {
+    this.syncers.forEach((s) => s());
+  }
+
   get visible(): boolean {
     return !this.root.classList.contains('hidden');
   }
@@ -100,16 +121,16 @@ export class DebugPanel {
     const ms = (v: number) => (v ? `${v.toFixed(1).padStart(5)} ms` : '    – ms');
     this.stats.textContent = [
       `display   ${s.displayFps.toFixed(0).padStart(3)} fps`,
-      `fill      ${s.pipelineFps.toFixed(1).padStart(5)} fps`,
+      `pipeline  ${s.pipelineFps.toFixed(1).padStart(5)} fps`,
       `detect   ${ms(s.detectMs)}  (model ${s.inferMs.toFixed(1)})`,
       `mask     ${ms(s.maskMs)}`,
-      `inpaint  ${ms(s.inpaintMs)}`,
+      `effect   ${ms(s.inpaintMs)}`,
       `erased    ${s.phones}${s.phones ? `  score ${s.bestScore.toFixed(2)}` : ''}${s.held ? '  (holding)' : ''}`,
       // One line per object followed: state and the share of its recent frames that said phone.
       ...(s.objects.length ? s.objects : ['–']).map((line, i) => `${i ? '          ' : 'objects   '}${line}`),
       `not phone ${s.rejected || '–'}`,
       `detector  ${s.detector}`,
-      `fill      ${s.fill}`,
+      `mode      ${s.effect}`,
       `source    ${s.source}`,
     ].join('\n');
   }

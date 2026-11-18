@@ -1,7 +1,7 @@
 import type { FrameSource } from './camera';
 import { PhoneTracker, type Verdict } from './detect/tracker';
 import type { PhoneBox, YoloSegDetector } from './detect/yoloSeg';
-import type { Effect } from './effects/types';
+import type { Effect, PickedPhone } from './effects/types';
 import { AlphaCanvas } from './mask/alphaCanvas';
 import { MaskStabilizer, type StableMask } from './mask/stabilizer';
 import type { Settings } from './settings';
@@ -14,7 +14,7 @@ export interface PipelineStats {
   detectMs: number;
   inferMs: number;
   maskMs: number;
-  /** Time spent in the effect (inpainting). 0 while no phone is visible. */
+  /** Time spent in the effect (inpainting, or cutting out in grow mode). 0 while no phone is visible. */
   effectMs: number;
   /** Objects erased in the last frame, and the best phone score among them. */
   phones: number;
@@ -84,6 +84,18 @@ export class Pipeline {
     this.maskViz = makeCanvas(this.width, this.height);
   }
 
+  /** The effect in use. */
+  get activeEffect(): Effect {
+    return this.effect;
+  }
+
+  /** Switch effect (mode). The new one starts from nothing; the next processed frame feeds it. */
+  setEffect(effect: Effect): void {
+    if (effect === this.effect) return;
+    effect.reset();
+    this.effect = effect;
+  }
+
   start(): void {
     if (this.running) return;
     this.running = true;
@@ -113,6 +125,8 @@ export class Pipeline {
     const back = this.front ^ 1;
     const frame = this.frames[back];
     frame.ctx.drawImage(this.source.element, 0, 0, width, height);
+    // Held for the whole frame, in case the mode is switched while this frame is being worked on.
+    const effect = this.effect;
 
     // Every object that looks even slightly like a phone (half the threshold) goes to the
     // tracker; only the ones it has decided on are erased.
@@ -121,6 +135,8 @@ export class Pipeline {
       conf: s.confidence,
       floor: Math.max(0.05, s.confidence * 0.5),
       topClassOnly: s.topClassOnly,
+      soft: !!effect.needsPhoneAlpha,
+      person: !!effect.needsPersonAlpha?.(s),
       choose: (seen) => {
         verdicts = this.tracker.update(seen, performance.now(), { conf: s.confidence, watchMs: s.watchMs, share: s.watchShare });
         return verdicts.map((v) => v.erase);
@@ -141,18 +157,26 @@ export class Pipeline {
     this.mask = mask;
     if (s.showMask) this.drawMaskViz();
 
+    // The decided-on objects, in the detector's order (the same as det.boxes), with their ids.
+    const phones: PickedPhone[] = [];
+    det.seen.forEach((box, i) => {
+      const v = verdicts[i];
+      if (v?.erase) phones.push({ ...box, id: v.id, erasedMs: v.erasedMs });
+    });
     const f = {
       frame: frame.canvas,
       width,
       height,
       mask,
       maskCanvas: this.alphaCanvas.canvas,
-      boxes: det.boxes,
+      phoneAlpha: det.boxes.length ? det.soft : null,
+      personAlpha: det.boxes.length ? det.person : null,
+      phones,
       settings: s,
     };
-    this.effect.onMask(f);
+    effect.onMask(f);
     const t1 = performance.now();
-    await this.effect.process(f);
+    await effect.process(f);
     const effectMs = mask.present ? performance.now() - t1 : 0;
 
     this.front = back;

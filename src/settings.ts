@@ -1,5 +1,13 @@
 import type { CameraFacing } from "./camera";
 
+/** What happens to a phone: erased ("remove") or blown up ("grow"). */
+export type ModeId = "remove" | "grow";
+/**
+ * Grow mode: what is enlarged. "hand": the mask (as "mask") plus the hand on the phone, from the
+ * detector's person mask (`growReach`); "mask": the detector's mask, with the dents fingers make
+ * in it filled (`growFill`); "hull": the mask's convex hull; "rectangle": a rectangle around it.
+ */
+export type GrowShape = "hand" | "mask" | "hull" | "rectangle";
 export type FillId = "migan" | "telea" | "stylised";
 export type StyleVariant = "void" | "flat" | "blur";
 /** The -320 models take 320×320 input instead of 640×640: about 4× faster, but miss small phones. */
@@ -10,6 +18,7 @@ export type DetectorModel =
     | "yolo11n-seg-320";
 
 export interface Settings {
+    mode: ModeId;
     fill: FillId;
     /** Variant used when fill === 'stylised'. */
     style: StyleVariant;
@@ -51,9 +60,33 @@ export interface Settings {
     cropSize: number;
     /** 0..0.9: how much of the previous fill is blended into the new one while the phone is still. */
     fillSmoothing: number;
+    /** Grow mode: the shape that is enlarged (see GrowShape). */
+    growShape: GrowShape;
+    /**
+     * Grow mode, mask shape: fill the dents fingers make in the mask up to about twice this
+     * radius, as a share of the phone's size (square root of its area). 0: the exact mask.
+     */
+    growFill: number;
+    /**
+     * Grow mode, hand shape: how far along the hand, from the fingers on the phone, it is taken
+     * along (fading out towards the end), as a share of the phone box's longer side (at most 0.6).
+     */
+    growReach: number;
+    /** Grow mode: size of a phone the moment it is decided on, as a multiple of its real size. */
+    growStart: number;
+    /** Grow mode: the size it inflates to. */
+    growMax: number;
+    /** Grow mode: seconds it takes to get from growStart to growMax. */
+    growSeconds: number;
+    /**
+     * Grow mode, 0..0.9: how much of the previous frame's shape is kept (rectangle: its angle and
+     * size; mask: the cut-out itself). Damps wobble.
+     */
+    growSmoothing: number;
 }
 
 export const DEFAULTS: Settings = {
+    mode: "remove",
     fill: "migan",
     style: "blur",
     detector: "yolo11s-seg",
@@ -72,7 +105,29 @@ export const DEFAULTS: Settings = {
     persistMs: 150,
     cropSize: 320,
     fillSmoothing: 0.5,
+    growShape: "hand",
+    growFill: 0.15,
+    growReach: 0.25,
+    growStart: 1,
+    growMax: 2,
+    growSeconds: 5,
+    growSmoothing: 0.5,
 };
+
+/**
+ * Defaults that were changed, with their earlier values. Settings are saved as a whole, so a
+ * saved value equal to an earlier default was most likely never chosen; it follows the new
+ * default instead.
+ */
+const OLD_DEFAULTS: { [K in keyof Settings]?: Settings[K][] } = {
+    growShape: ["rectangle", "hull", "mask"],
+    growStart: [1.2],
+    growMax: [5],
+    growSeconds: [30],
+};
+
+export const MODE_ORDER: ModeId[] = ["remove", "grow"];
+export const GROW_SHAPES: GrowShape[] = ["hand", "mask", "hull", "rectangle"];
 
 export const FILL_ORDER: FillId[] = ["migan", "telea", "stylised"];
 export const STYLE_ORDER: StyleVariant[] = ["blur", "flat", "void"];
@@ -97,6 +152,9 @@ export class SettingsStore {
         // Drop settings that no longer exist (e.g. the old reconfirmMs).
         for (const k of Object.keys(saved))
             if (!(k in DEFAULTS)) delete (saved as Record<string, unknown>)[k];
+        for (const [k, old] of Object.entries(OLD_DEFAULTS))
+            if ((old as unknown[]).includes((saved as Record<string, unknown>)[k]))
+                delete (saved as Record<string, unknown>)[k];
         this.value = { ...DEFAULTS, ...saved };
         // The mask overlay is a debugging aid; never come back from a reload with it on.
         this.value.showMask = false;

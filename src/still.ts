@@ -6,13 +6,15 @@
 //   &save=name                      (dev server only) also write the result sheet to captures/name.png
 //   &camera=back                    capture from an iPad's rear camera
 //   &top=0                          turn off the top-category check (compare with &top=1)
-//   &detectOnly                     skip the fills (fast; used by scripts/stills_report.mjs)
+//   &detectOnly                     skip the fills and grow (fast; used by scripts/stills_report.mjs)
+//   &growMax=3                      size of the two grow tiles (any numeric setting, as above)
 import './style.css';
 import { captureStill, loadImage } from './camera';
 import { YoloSegDetector } from './detect/yoloSeg';
 import { report as sendReport, startReporting } from './devReport';
+import { GrowEffect } from './effects/grow';
 import { RemoveEffect } from './effects/remove';
-import type { EffectFrame } from './effects/types';
+import type { EffectFrame, PickedPhone } from './effects/types';
 import { FillSet } from './fill';
 import { AlphaCanvas } from './mask/alphaCanvas';
 import { MaskStabilizer } from './mask/stabilizer';
@@ -86,6 +88,7 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
     post.push(det.postMs);
   }
   const boxes = det.boxes.map((b) => ({ ...b }));
+  const phones: PickedPhone[] = boxes.map((b, i) => ({ ...b, id: i + 1, erasedMs: 0 }));
   const rejected = det.rejected.map((r) => ({ ...r }));
   // One line on what the detector made of this frame.
   const verdict = [
@@ -151,7 +154,7 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
   ];
   for (const v of detectOnly ? [] : variants) {
     const s: Settings = { ...settings, fill: v.fill, style: v.style ?? settings.style };
-    const f: EffectFrame = { frame, width, height, mask, maskCanvas: alphaCanvas.canvas, boxes, settings: s };
+    const f: EffectFrame = { frame, width, height, mask, maskCanvas: alphaCanvas.canvas, phoneAlpha: null, personAlpha: null, phones, settings: s };
     const { canvas, ctx } = makeCanvas(width, height);
     ctx.drawImage(frame, 0, 0);
     const times: number[] = [];
@@ -168,6 +171,38 @@ async function run(frame: HTMLCanvasElement): Promise<void> {
     const ms = times.length ? `${median(times).toFixed(1)} ms` : '–';
     tiles.push({ label: ready ? `${v.label} · ${ms}` : `${v.label} · NOT LOADED (${fills.error(v.fill) ?? '?'})`, canvas });
     lines.push(`fill ${v.label.padEnd(15)} ${ms.padStart(9)}   ${fills.get(v.fill).backend()}`);
+  }
+
+  // Grow mode, fully grown: mask + hand, mask with finger gaps filled, the exact mask, and the other shapes.
+  if (!detectOnly && boxes.length) {
+    // One more detection, with the anti-aliased mask grow mode asks for (kept out of the timings above).
+    const extra = await detector.detect(frame, width, height, { ...opts, soft: true, person: true });
+    const soft = extra.soft;
+    const personAlpha = extra.person;
+    const kinds = [
+      { label: `grow mask + hand ${Math.round(settings.growReach * 100)} %`, shape: 'hand', fill: settings.growFill },
+      { label: `grow mask, gaps ${Math.round(settings.growFill * 100)} %`, shape: 'mask', fill: settings.growFill },
+      { label: 'grow exact mask', shape: 'mask', fill: 0 },
+      { label: 'grow hull', shape: 'hull', fill: 0 },
+      { label: 'grow rectangle', shape: 'rectangle', fill: 0 },
+    ] as const;
+    for (const { label, shape, fill } of kinds) {
+      const size = settings.growMax;
+      const grown = phones.map((p) => ({ ...p, erasedMs: settings.growSeconds * 1000 }));
+      const s: Settings = { ...settings, growShape: shape, growFill: fill };
+      const f: EffectFrame = { frame, width, height, mask, maskCanvas: alphaCanvas.canvas, phoneAlpha: soft, personAlpha, phones: grown, settings: s };
+      // A new effect (not reset()), so the phone counts as picked long ago, not just now.
+      const grow = new GrowEffect(width, height);
+      grow.onMask(f);
+      const t = performance.now();
+      await grow.process(f);
+      const cutMs = performance.now() - t;
+      const { canvas, ctx } = makeCanvas(width, height);
+      ctx.drawImage(frame, 0, 0);
+      grow.render(ctx, true);
+      tiles.push({ label: `${label} ${size}× · ${cutMs.toFixed(1)} ms`, canvas });
+      lines.push(`${label.padEnd(20)} ${`${cutMs.toFixed(1)} ms`.padStart(9)}`);
+    }
   }
 
   // Result sheet: all tiles in a row, labelled.

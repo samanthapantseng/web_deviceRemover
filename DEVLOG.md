@@ -516,3 +516,207 @@ page and `npm run build` are unchanged.
 - The real iPad test (README checklist).
 - What the iPad should show during an outage: now the last picture with a small orange dot;
   fading to black is a one-line change.
+
+## 2026-11-18 · grow mode (branch `grow`)
+
+A second mode: instead of erasing the phone, it inflates. Decided with the user before any
+code: the phone is cut out along its **exact mask** (a fitted rectangle is the fallback if
+that looks wonky), drawn **on top of everything** (no hand model; the hand disappears behind
+it), grows **from its centre**, and **inflates over time** to 5×. My defaults, accepted:
+starts at 1.2× the moment the tracker picks it, 30 s to full size, shrinks back and fades in
+0.25 s when it is gone, same watch time as remove mode, `G` / panel / `?mode=grow`, remove
+stays the default.
+
+### What was built
+
+- `src/effects/grow.ts`: per phone (tracker id), cut the camera pixels under its mask into a
+  square sprite centred on the mask's centre; draw it scaled around that centre. Size from the
+  time since the tracker decided on it (`erasedMs`, new in the tracker's verdict), smoothstep
+  from start to max size.
+- No inpainting: the bigger copy covers the real phone. MI-GAN is only loaded when remove mode
+  is switched on.
+- Mode switching: `Pipeline.setEffect`, each effect has `reset()`; the pipeline holds one
+  effect for the whole frame, so a switch mid-frame cannot mix them.
+- Still page: two extra tiles, grow at start size and fully grown. Headless check: a grow pass
+  and `captures/check_grow_sheet.jpg`.
+
+### What failed, and the fix
+
+- **Stair-stepped edge at 5×.** The detector's mask is on/off per camera pixel, so each step
+  became a 5 px block. A 3×3 blur of the on/off mask helped little. Fix: in grow mode the
+  detector keeps its per-pixel mask values (logits) and turns them into an anti-aliased edge
+  (0.5 + logit / |gradient|, the signed distance to the edge). On one real webcam still: 517
+  partly transparent pixels around the outline, about one per edge pixel, as intended.
+- **Straight cuts through the phone's corners.** Visible only once the edge was smooth: the
+  model's box was a little tight on the real webcam still, and the mask is cut at the box, so
+  the enlarged phone had flat sides at the top, bottom and lower left. Fix: in grow mode the
+  mask is painted 8 % of the box's longer side beyond the box (remove mode unchanged).
+- **Hole in the giant phone.** On a stock photo the mask had a gap over a face on the phone's
+  screen; at 5× the blue background showed through a large blob. Fix: gaps fully enclosed by
+  the mask are filled (flood fill from the box border). Notches open to the edge (fingers) are
+  left alone.
+- **Switching back to grow showed the phone at 5× at once**, because the tracker had picked it
+  long before. Growth now counts from the later of "picked" and "grow mode switched on".
+  Checked: 1.2× 0.1 s after the switch, 2.6× at 0.8 s, 5.0× at 2.4 s (2 s growth for the test).
+- **`?mode=grow` started in grow mode but the panel said "remove".** URL parameters change the
+  settings without going through the store, so the panel was not updated. Fixed with a panel
+  refresh after the parameters (this also fixes the same issue for `?fill=`).
+
+### Measured (this Mac, headless Chrome, 640×480)
+
+| | pipeline | detect | effect | display |
+|---|---|---|---|---|
+| grow, moving test clip | 29.8 fps | 24.4 ms | 0.4 ms | 60 fps |
+| grow, live view on a webcam still | 29.9 fps | 25.4 ms | 0.5 ms | 60 fps |
+| remove, MI-GAN, same run (unchanged) | 13.7 fps | 23.6 ms | 47 ms | 60 fps |
+
+Cutting out one phone on the still page: 1–5 ms (cold) per call. On a webcam still, growth
+over 4 s (test setting) read 1.3×, 1.8×, 2.8×, 3.9×, 4.9×, 5.0× at 0.6 s steps. A phone that
+stops counting (confidence raised to 0.99) was let go by the tracker after 0.8 s, then shrank
+and faded and was gone 0.3 s later.
+
+### Not verified
+
+- A real camera with a real person: the edge wobble ×5 on real camera noise, and whether 0.5
+  cut-out smoothing is enough or too much (blurs a moving phone).
+- The iPad, in either way of running it.
+- Two phones at once (each should grow on its own clock; the code path is the same per id).
+
+### Open
+
+- If the exact mask looks wonky on the real camera: fitted rectangle (rotated box from the
+  mask), as agreed.
+- Fingers on the phone are enlarged with it, and fingers over its edge leave an enlarged notch.
+
+### 2026-11-18 · grow mode, take 2: rectangle, 1× → 2× in 5 s
+
+The user tried the mask cut-out on the real camera: the mask did not work well. Decided: the
+fitted rectangle, so that fingers on the phone grow with it. And the slow growth did not work
+because the picture keeps moving: new defaults 1× when picked, 2× at the end, 5 s.
+
+- **Rectangle.** A rotated rectangle with rounded corners (radius 12 % of the short side) is
+  fitted to the phone's mask (holes filled, painted 8 % beyond the box as before). Everything
+  inside it is drawn bigger. It is a clip path set in drawing space, so its edge stays sharp
+  at any size (the mask version had to anti-alias the mask for that). The picture inside is
+  the current frame; only the rectangle's angle and size are smoothed ("Grow: shape
+  smoothing", 0.5), and the centre is not, because the picture is cut around it and must match
+  the frame.
+- **First fit, failed: the mask's principal axis** for the angle. On the moving test clip the
+  phone is seen at an angle and its mask is a slanted four-sided shape; the principal axis was
+  off by about 6°, and the rectangle around everything took in a strip of sofa. Fix: the
+  smallest rectangle that encloses the mask (it has a side along one edge of the mask's
+  convex hull; every hull edge is tried). The strip shrank to a small corner. A phone seen at
+  an angle is a trapezoid, so some background at a corner remains.
+- The mask cut-out stays as a second shape in the panel ("the phone's own outline").
+- **Saved settings.** Settings are saved as a whole, so the user's browser already held the
+  old 1.2 / 5 / 30 s, and new defaults would not have reached it. A saved value equal to an
+  old default is now dropped on load (`OLD_DEFAULTS` in `settings.ts`). Checked: old defaults
+  load as 1 / 2 / 5 s; hand-set values (smoothing 0.3, confidence 0.7, sizes 1.5 and 3) stay.
+
+Measured (headless, moving clip): pipeline 29.5 fps, detect 28.5 ms, effect 0.3 ms, display
+60 fps. Fitting and copying one phone on the still page: 4–11 ms cold. Leaving (shrink and
+fade) and `G` switching unchanged; switching back to grow restarts at 1×.
+
+Not verified: the rectangle on a real camera with a real person.
+
+### 2026-11-18 · grow mode, take 3: the phone's outline plus the fingers on it
+
+The user found the rectangle "really bad" and asked for the mask look plus the fingers. Two
+ways were discussed: (1) fill the mask out to its convex hull, which brings the fingers over the
+phone but cuts the hand off along a straight line where it leaves the phone; (2) add a hand mask
+(YOLO's person mask, or a separate hand/skin model) to bring whole fingers. Decided: build (1)
+first and test it.
+
+- **Outline shape ("hull", now the default).** Convex hull of the phone's mask (holes filled,
+  painted 8 % beyond the box). Pieces of the mask under 5 % of it are left out as specks, but
+  not every piece except the biggest: a finger across the phone can split the mask in two.
+  Centre: the hull's centre of area. The outline is kept as its distance from the centre in 120
+  directions (every 3°), blended with the previous frame's ("Grow: shape smoothing", 0.5), and
+  drawn as a clip path, so the edge is sharp at any size and the picture inside is the current
+  frame (the exact-mask shape blends pictures, which smears a moving phone).
+- Rectangle and exact mask stay as the other two shapes in the panel. A saved "rectangle"
+  (only ever the default) moves to the new default; a shape chosen by hand stays.
+- Seen on stills: on the user's webcam still, the two fingers over the screen are enlarged
+  without the notch, the phone keeps its rounded corners, and the outline runs straight
+  across the hand where it leaves the phone. On a stock photo the thumb grows with the phone
+  and the background corner of the rectangle is gone. On the moving clip the strip of sofa
+  the rectangle took in is gone.
+
+Measured (headless, moving clip; another session was using the Mac at the same time, MI-GAN
+fell to 8 fps from 11 to 14): grow 28.5 fps, effect 0.6 ms, display 60 fps. Outline fit and copy
+on the still page: 5–13 ms cold. Leaving, `G` switching and the saved-settings move checked.
+
+Not verified: the outline on a real camera with a real person.
+
+### 2026-11-18 · grow mode, take 4: the precise mask plus the fingers on it
+
+The convex outline was "not what I wanted": a phone is a rounded rectangle, so its convex hull
+looks like the rectangle. The user wants the exact mask, which is much more precise, plus the
+fingers on it.
+
+- **Finger gaps filled by a morphological closing** of the mask (holes filled, specks left
+  out): grow it by r with one distance field, shrink it back by r with a second. Every dent
+  narrower than about 2r is filled, with what is there (the fingers), and the rest of the
+  outline stays exactly the mask's, including its anti-aliased edge. The new edge across a
+  filled dent is anti-aliased from the second distance field. r is "Grow: fill finger gaps",
+  a share of the phone's size (square root of its area), default 15 %; 0 gives the exact mask.
+  A border of r + 2 px is added around the area, so the shrinking also works at the frame's
+  edge.
+- **Only the shape is smoothed now, not the picture.** The exact-mask version blended each
+  cut-out (picture and alpha) with the previous one, which smears a moving phone. Now the mask
+  alone is blended (aligned on the phone's centre) and the colour is always the current frame.
+- This is the default shape again ("precise mask + fingers on it"); convex outline and
+  rectangle stay in the panel. Saved "rectangle" or "hull" (both only ever defaults) load as
+  the mask.
+- Seen on stills: on the user's webcam still the two fingers over the screen are enlarged
+  instead of leaving a notch; the top, left and bottom edges are identical to the exact mask;
+  lower right the outline still follows the hand where it covers a long stretch of the edge
+  (wider than the fill). On a stock photo the thumb on the screen grows with the phone.
+
+Measured (headless, moving clip): grow 27.3 fps (stylised fill 27.9 in the same run), effect
+1.9 ms with the gaps filled, display 60 fps. On the still page (cold, bigger phones): 10–20 ms
+with the gaps filled, 3–5 ms without. Leaving, `G` switching and saved settings checked.
+
+Not verified: on a real camera with a real person; whether 15 % is the right fill there.
+
+### 2026-11-18 · grow mode, take 5: the hand, from the person mask (option 2a)
+
+On the user's snapshot (phone held up, four fingers across it) the fingers were lost: they
+cover one band 67 px wide, and the gap fill bridges about 20 px (52 px at most; filling 67 px
+needs a radius of about 34 px, which gives the convex outline). The phone mask cannot say where
+the hand is. Decided: try 2a, the "person" mask YOLO computes in the same pass.
+
+- **Detector:** with `person: true` it also decodes the people (score ≥ 0.25, NMS, up to 6)
+  inside each erased phone's reach area (phone box + 60 % of its longer side), each inside its
+  own box, anti-aliased like the soft phone mask. Only asked for when the grow shape is "hand".
+- **Seen first:** the person mask follows the hand and fingers well, but it is the whole
+  person: on the snapshot the hand runs into the head; with the phone at the ear everything
+  around the phone is person (face, hair, body). Only against a room background is it just the
+  hand.
+- **Hand shape (now the default):** the precise mask with gaps filled, plus person pixels
+  that start from the fingers covering the phone and spread through the person mask.
+  - First try: start from person pixels inside the phone's convex hull, spread up to 35 % of
+    the phone's length along the hand. Failed: a giant faded eye under the phone on the
+    snapshot, and a ghost of the mouth and eye with the phone at the ear.
+  - The mouth ghost came from wrong starting points: thin slivers of cheek inside the hull
+    along the wobbly mask edge. Fix: start only from pixels at least 5 % of the phone's length
+    inside the outline. Fingers covering the phone reach that deep.
+  - The spread also ran along the hand into the face. Fix: limit it by straight-line distance
+    from the fingers (a distance field), and fade by that distance.
+  - With both fixes and a reach of 25 % (default): the snapshot shows a giant hand holding the
+    giant phone, the palm fading over the forehead; the phone at the ear keeps the face clean;
+    stock photos and the clip carry the hand along and fade into the real one. At 35 % a little
+    of the face near the eye still came along on the snapshot.
+- **Test page bug, found on the way:** the still page's grow tiles were partly drawn below
+  full size on fast images: "grow mode switched on" was 0 (page load), and a phone "picked 5 s
+  ago" on a page loaded under 5 s ago was capped there. Now it starts at "never". The live app
+  was not affected (the tracker picks phones after the page loads). Some still-page grow tiles
+  in the takes above (fast images) were therefore shown smaller than 2×.
+
+Measured warm, live page on stills (headless): mask 1–3 ms, hand 4–11 ms per frame; pipeline
+22.5–28.8 fps with the hand (26–29 without). Moving clip: grow 28 fps, effect 4.2 ms; remove
+unchanged. Leaving, `G` switching and saved settings (old default shapes load as hand) checked.
+
+Not verified: live with a real person; a phone held in front of the body (person mask all
+around it: the spread would take in clothing near the fingers, faded); two people close
+together.

@@ -120,7 +120,7 @@ function devReport(): Plugin {
             lastStatsPrint.set(who, now);
             console.log(
               `${who} display ${n(r.displayFps)} fps · fill ${n(r.pipelineFps, 1)} fps · detect ${n(r.detectMs)} ms · ` +
-                `inpaint ${n(r.inpaintMs)} ms · phones ${n(r.phones)} · ${String(r.detector)} · ${String(r.fill)}`,
+                `effect ${n(r.inpaintMs)} ms · phones ${n(r.phones)} · ${String(r.detector)} · ${String(r.effect ?? r.fill)}`,
             );
           } else if (r.kind === 'link') {
             // Streaming mode: connection stats from the iPad's stream page or the Mac page.

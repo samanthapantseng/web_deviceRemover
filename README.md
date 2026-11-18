@@ -2,6 +2,7 @@
 
 A live camera view in which phones are erased from people's hands, leaving the empty pose.
 Critical-design prototype (v0, laptop webcam), inspired by Jonah Brucker-Cohen's *Device Inversions*.
+A second mode, **grow**, does the opposite: the phone inflates (see "Grow mode").
 
 It runs in the browser, in one of two ways (see "Two ways to run it"): on the Mac alone with
 its webcam, or with an iPad as camera and screen while the Mac does the work. Either way no
@@ -9,7 +10,8 @@ frame leaves the local network, and nothing is saved unless you press the snapsh
 
 ```
 camera → YOLO11-seg (phone-like objects) → tracker (watch 1.5 s, then decide) → mask stabiliser
-       → fill (MI-GAN / Telea / stylised) → composite
+       → remove: fill (MI-GAN / Telea / stylised) → composite
+       → grow:   the phone's mask + the hand on it → draw it bigger, growing over time
 ```
 
 ## Setup
@@ -106,6 +108,7 @@ for that: see "Testing on the iPad".
 
 | Key | |
 |---|---|
+| `G` | mode: remove ↔ grow |
 | `1` `2` `3` | fill mode: MI-GAN, Telea, stylised (press `3` again to step through blur / flat / void) |
 | `M` | mask overlay: mask in magenta, erased objects in yellow, objects being watched in orange (dashed), objects decided against in grey (dashed), inpaint window in cyan |
 | `S` | snapshot: before and after of the same frame, side by side, as a PNG download |
@@ -114,11 +117,13 @@ for that: see "Testing on the iPad".
 | `X` | mirror |
 | double-tap | debug panel, on a touch screen (it has buttons for snapshot and fullscreen) |
 
-The debug panel shows display fps, fill fps, detection / mask / inpaint times, the active
-backend and what the tracker is watching (e.g. `#4 watching 1.2/1.5 s · 80 %`: object 4, seen
-for 1.2 s, looked like a phone in 80 % of its frames). It has sliders for confidence, watch
-time, the share of frames needed, dilation, feather, hold frames, mask persistence, inpaint
-crop size and fill smoothing, and a front / back camera choice (for a tablet).
+The debug panel shows display fps, pipeline fps, detection / mask / effect times (effect: the
+inpainting, or in grow mode the cutting out), the mode with its backend or current size, and
+what the tracker is watching (e.g. `#4 watching 1.2/1.5 s · 80 %`: object 4, seen for 1.2 s,
+looked like a phone in 80 % of its frames). It has the mode (remove / grow), the grow
+settings, sliders for confidence, watch time, the share of frames needed, dilation, feather,
+hold frames, mask persistence, inpaint crop size and fill smoothing, and a front / back camera
+choice (for a tablet).
 Settings are remembered in the browser. The screen is kept awake while the page is open.
 
 ## Testing on the iPad
@@ -293,7 +298,10 @@ uv run --python 3.12 --with onnx python scripts/inspect_onnx.py public/models/mi
   still page before capturing (e.g. `book`), then run `npm run stills`. It lists every
   `captures/still-*.png` with its phone score with and without the top-category check, and
   what the model really thinks the turned-away objects are.
-- **Live view on a still image**: `http://localhost:5173/?src=captures/x.png`.
+- **Live view on a still image**: `http://localhost:5173/?src=captures/x.png`. Add
+  `&mode=grow` (or `&mode=remove`) to start in that mode without changing the saved setting.
+- The still page also shows grow mode, fully grown: mask + hand, the mask with finger gaps
+  filled, the exact mask, the convex outline and the rectangle.
 - **Headless check**: plays a clip as a fake webcam in the installed Chrome and prints
   timings for every fill mode.
 
@@ -306,6 +314,8 @@ npm run check -- captures/clip_moving.y4m
 ```
 
 - `?backend=wasm` forces the CPU fallback; `?model=yolo11n-seg` tries another detector.
+- The check ends with grow mode (full size in 3 s) and writes `captures/check_grow_sheet.jpg`:
+  4 views a second apart while it grows, then 4 consecutive views at full size.
 
 ## Measured performance
 
@@ -343,6 +353,73 @@ So every phone stays visible for about 1.5 s after it appears or comes back. A l
 scores high for under about 1 s and then drops is never erased; one that stays high for longer
 than two thirds of the watch time is. Setting the watch time to 0 erases at
 once (the earlier behaviour, without the earlier blinking).
+
+## Grow mode
+
+`G` (or "Mode" in the panel) switches between remove and grow. In grow mode nothing is
+erased: once the tracker has decided on a phone (the same watching as above), the phone is
+drawn bigger on top of the picture, around its own centre, fingers lying on it included. It
+starts at its real size (1×) and inflates to 2× over 5 s (smooth start and end), each phone
+counted from when it was picked; switching to grow mode starts every phone from 1× again.
+When the phone is put away, it shrinks back and fades out in 0.25 s. All of it is in the
+panel ("Grow: …").
+
+"Grow: shape" decides what is enlarged:
+
+- **precise mask + hand (person mask)** (default): as the next one, plus the hand holding the
+  phone, taken from the "person" mask the detector computes in the same pass. It starts from
+  the person pixels that cover the phone (at least 5 % of the phone's length inside its
+  outline, where the phone itself is not: fingers on it) and spreads through the person mask,
+  but only within "Grow: hand reach" (25 % of the phone's length) in a straight line from
+  those fingers, fading out over the last 40 %. A face or body next to the phone is not in
+  front of it, so it does not start there; where it touches the hand within the reach, it
+  comes along faded.
+- **precise mask + fingers on it**: the detector's own mask of the phone, with its
+  precise, soft edge, and the dents fingers make in it filled with the fingers that are there.
+  The filling is a morphological closing (grow the mask by a radius, shrink it back by as
+  much): every dent narrower than about twice the radius is filled, the rest of the outline
+  stays exactly as it was. "Grow: fill finger gaps" sets the radius as a share of the phone's
+  size (15 %); at 0 it is the exact mask, with notches where fingers cover the phone.
+- **convex outline + fingers on it**: the mask's convex hull. A phone is a rounded rectangle,
+  so this comes out close to the rectangle, with a straight line where the hand leaves it.
+- **rectangle + fingers on it**: the smallest rotated, round-cornered rectangle around the
+  mask; a phone seen at an angle takes in some background at a corner.
+
+How it works (`src/effects/grow.ts`):
+
+- **No inpainting.** A bigger copy around the phone's own centre covers the real phone, so
+  MI-GAN is not needed and not even loaded until remove mode is switched on. The effect costs
+  1–3 ms a frame for the mask, 4–11 ms with the hand (bigger for a phone close to the camera);
+  the pipeline stays at 22–29 fps.
+- **The picture is always the current frame.** Only the shape is smoothed over frames ("Grow:
+  shape smoothing", 0.5: the mask, or the outline / rectangle), so a moving phone does not
+  smear, and the drawn position follows the phone smoothly instead of jumping at the
+  detector's rate.
+- **Smooth edge.** The detector's mask is normally on/off per pixel; enlarged, every step
+  would show. In grow mode the detector also returns an anti-aliased mask, computed from the
+  model's own mask values. Convex outline and rectangle are clip paths, sharp at any size.
+- **The whole phone.** The model cuts its mask off at the phone's box, which is sometimes a
+  little tight. In grow mode the mask is painted 8 % beyond the box. Holes in the mask are
+  filled and specks (pieces under 5 % of it) are left out.
+- **Several phones**: each grows on its own clock; the biggest is drawn first, so one that has
+  only just been picked stays visible on top.
+
+Limits:
+
+- **The person mask is the whole person.** With the hand shape, a face, hair or body touching
+  the hand close to the fingers comes along (faded) within the reach; a smaller reach keeps
+  less of the hand and less of the rest. Untested: a phone held in front of the body, where
+  the person mask is all around it.
+- **Without the hand shape, only fingers over the phone grow**, and only where they make a
+  dent narrower than the fill: where the whole hand covers a long stretch of the phone's edge
+  (four fingers side by side), the outline follows the hand.
+- **The hand disappears** where the giant phone covers it.
+- **At 1× the real phone can peek out** when the hand moves: the copy is the same size as the
+  phone and one detector cycle (about 35 ms) behind it. This goes away as it grows.
+- **Soft when big.** The camera picture is 640×480, so the enlarged phone is an enlarged
+  low-resolution image.
+- The hand shape is tested on photos (two webcam stills of the user, two stock photos) and the
+  moving test clip, not yet live with a real person.
 
 ## How flicker is kept down
 
@@ -406,7 +483,7 @@ src/
   detect/yoloSeg.ts  YOLO11-seg inference and mask decoding
   detect/tracker.ts  follows each phone-like object and decides whether it is erased
   mask/              temporal stabiliser, distance field, inpaint-window tracker
-  effects/           Effect interface; remove.ts is the erase effect
+  effects/           Effect interface; remove.ts erases the phone, grow.ts inflates it
   fill/              Fill interface; migan.ts, telea.ts, stylised.ts
   runtime/ort.ts     onnxruntime-web set-up (WebGPU, CPU fallback)
   ui/panel.ts        debug panel
@@ -423,9 +500,9 @@ scripts/
   stream_check.mjs   streaming mode, tested on this Mac (npm run check:stream)
 ```
 
-To add a mode (phone inflating, and so on), implement `Effect` in `src/effects/` and pass it
-to the `Pipeline` in `main.ts`; camera, detection and mask stabilisation are reused as they
-are. To add a fill, implement `Fill` and register it in `src/fill/index.ts`.
+To add a mode, implement `Effect` in `src/effects/`, add it to `ModeId` in `settings.ts` and
+to `effectFor` in `main.ts`; camera, detection, tracker and mask stabilisation are reused as
+they are. To add a fill, implement `Fill` and register it in `src/fill/index.ts`.
 
 ## GitHub Pages
 
