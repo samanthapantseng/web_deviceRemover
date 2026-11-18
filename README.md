@@ -5,7 +5,8 @@ A second mode, **grow**, does the opposite: the phone inflates (see "Grow mode")
 
 It runs in the browser, in one of two ways (see "Two ways to run it"): on the Mac alone with
 its webcam, or with an iPad as camera and screen while the Mac does the work. Either way no
-frame leaves the local network, and nothing is saved unless you press the snapshot key.
+frame leaves the local network, and nothing is saved unless you take a snapshot (`S`) or a
+screen recording (`V`).
 
 ```
 camera → YOLO11-seg (phone-like objects) → tracker (watch 1.5 s, then decide) → mask stabiliser
@@ -79,13 +80,13 @@ Access).
 
    A Chrome window opens and says "waiting for the iPad…". (A privacy warning there means the
    Mac does not trust the certificate yet: **Advanced → Proceed to localhost** works for now.)
-   Leave this window open and visible; the fill mode is changed here (`1` `2` `3`, `D` for the
-   panel).
+   Leave this window open and visible; the mode and the fill are changed here (`G` remove /
+   grow, `1` `2` `3` fill, `D` for the panel).
 
 3. **On the iPad**, on the same Wi-Fi as the Mac: in Safari, open the address from step 1 with
    `stream.html` added, for example `https://10.21.12.136:8443/stream.html`, and allow the
-   camera. After a few seconds the picture appears, phones removed. Double-tap for the iPad's
-   own small panel (it has Screenshot and Record buttons).
+   camera. After a few seconds the picture appears, phones removed (or growing, in grow mode).
+   Double-tap for the iPad's own small panel (it has Screenshot and Record buttons).
 
 To stop: Ctrl-C in both Terminal windows. The address changes on another network; step 1 always
 prints the current one. If port 8443 is already taken (another `npm run dev:ipad` running),
@@ -202,14 +203,16 @@ iPad, Safari: /stream.html                      Mac, Chrome: /?source=stream
 
 The two pages connect directly with WebRTC, the technology video calls use, on the local
 network only: no internet, no outside servers. The dev server only introduces them to each
-other. Nothing is recorded. The iPad never shows its own raw camera; it shows only what comes
-back from the Mac, so phones stay hidden even while things start up.
+other. The stream itself is not stored anywhere; only a screenshot or a screen recording, when
+you ask for one (see below), saves a file. The iPad never shows its own raw camera; it shows
+only what comes back from the Mac, so phones stay hidden even while things start up.
 
 **Start it** as in "Two ways to run it" above. Mac and iPad have to be on the same network; your
 own small travel router or a phone hotspot is better than venue Wi-Fi (see below). The order
-does not matter, and either side can be reloaded at any time: the iPad reconnects by itself. Settings for the fill and the detector are made on the Mac (`D` for the panel). On the
-iPad, double-tap for its own small panel: screenshot, screen recording, camera front/back,
-mirror, fill the screen, reconnect, and the connection's numbers.
+does not matter, and either side can be reloaded at any time: the iPad reconnects by itself.
+Settings for the mode (remove / grow), the fill and the detector are made on the Mac (`D` for
+the panel). On the iPad, double-tap for its own small panel: screenshot, screen recording,
+camera front/back, mirror, fill the screen, reconnect, and the connection's numbers.
 
 **Screenshot on the iPad**: the panel's first button (or `S` on a keyboard). The same picture
 as `S` on the Mac: before and after of the same frame, side by side, the whole camera frame
@@ -276,6 +279,13 @@ iPad's camera, VP8; Wi-Fi not included):
 Picture back after: iPad page reloaded 0.3 s; connection dead without notice 4.6 s; the iPad
 stopped sending (only the Mac can notice) 4.7 s; Mac page reloaded 0.6 s; Mac page closed for
 10 s and reopened 1.1 s. A camera restart on the iPad keeps the connection.
+
+**Measured on the real iPad** (18 Nov, real Wi-Fi, H.264, 3 Mbit/s, `?latency`): round trip
+177 ms median (202 ms for 95 %). On calm Wi-Fi most of that is fixed steps: compressing and
+decompressing twice, and the processing on the Mac. On uneven Wi-Fi both browsers hold frames
+longer before showing them (in one session about 94 ms on the Mac and 125 ms on the iPad), and
+the lag grows with it. A lower bitrate (tried from 3 down to 0.6 Mbit/s, briefly) made no
+visible difference; at 640×480 the video only uses about 1.7–1.9 Mbit/s.
 
 **Test on the real iPad**, and note what you see:
 
@@ -360,7 +370,8 @@ yolo11s-seg. The same pipeline in a visible Chromium window displayed at 120 fps
 | Stylised (canvas) | 29.9 fps | 24 ms | 0.7 ms | 0.9 ms | 60 fps |
 | MI-GAN, no WebGPU | 2.1 fps | 250 ms | 1 ms | 260 ms | 60 fps |
 
-Not yet measured: a real webcam with a real person, and the iPad.
+Not measured this way: a real webcam with a real person. The iPad: see "Testing on the iPad"
+(on its own) and "Streaming mode" (with the Mac).
 
 ## Watching before erasing
 
@@ -449,8 +460,10 @@ Limits:
   phone and one detector cycle (about 35 ms) behind it. This goes away as it grows.
 - **Soft when big.** The camera picture is 640×480, so the enlarged phone is an enlarged
   low-resolution image.
-- The hand shape is tested on photos (two webcam stills of the user, two stock photos) and the
-  moving test clip, not yet live with a real person.
+- The hand shape is tested on photos (two webcam stills, two stock photos) and the moving test
+  clip, not yet live with a real person.
+- Not yet tested in streaming mode. The Mac runs grow mode the same way there (the same
+  pipeline); the iPad only shows the result.
 
 ## How flicker is kept down
 
@@ -510,7 +523,10 @@ Limits:
 src/
   main.ts            start-up, display loop, keys
   pipeline.ts        camera frame → detector → mask → effect, on its own async loop
+  settings.ts        all settings, their defaults, remembered in the browser
   camera.ts          webcam and stand-in frame sources
+  snapshot.ts        before/after snapshot (S) and file downloads
+  types.ts           small shared types
   detect/yoloSeg.ts  YOLO11-seg inference and mask decoding
   detect/tracker.ts  follows each phone-like object and decides whether it is erased
   mask/              temporal stabiliser, distance field, inpaint-window tracker
@@ -522,12 +538,17 @@ src/
   devReport.ts       iPad mode only: sends timings and errors to the Mac's terminal
   stream/            streaming mode: ipad.ts (the iPad's page), remoteSource.ts (the Mac's
                      side), link.ts (WebRTC set-up, statistics), signal.ts, latency.ts,
-                     shots.ts (the iPad's before/after screenshot, made on the Mac)
+                     shots.ts (the iPad's before/after screenshot, made on the Mac),
+                     screen.ts (fullscreen and keeping the iPad awake)
   recorder.ts        screen recording of the "after" picture (Mac page and iPad stream page)
 server/
   signalHub.ts       streaming mode: introduces the two pages to each other (dev server only)
 stream.html          streaming mode: the iPad's page
 scripts/
+  fetch_models.sh    downloads and exports the models (npm run models)
+  headless_check.mjs a clip as fake webcam, timings for every mode (npm run check)
+  make_test_clip.sh  turns a photo into a moving test clip for the check
+  stills_report.mjs  what the detector makes of your captures (npm run stills)
   make_cert.sh       https certificate for npm run dev:ipad
   stream_mac.sh      streaming mode: opens the Mac's page (npm run stream:mac)
   stream_check.mjs   streaming mode, tested on this Mac (npm run check:stream)

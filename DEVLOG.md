@@ -811,3 +811,97 @@ recording): an H.264 MP4, 640×480, 4.5 s for a 4.2 s tap-to-tap recording, abou
 while the screen showed all three. Display stayed at 60 fps. "Save last recording" started a
 second download; automatic stop with `?recordMax=3`, started with `V`, gave a 3 s file. The
 iPad recording test was run again after the move: same results. No console errors.
+
+## 2026-11-18 · lag on the real iPad, and a bitrate test
+
+The stream lags clearly more than Mac only. From the log of the first real iPad session
+(10:24–10:50 UTC; `captures/device-report-stream.jsonl`):
+
+- The link itself was healthy: H.264, 640×480, 30 fps and about 2.8 Mbit/s in each direction,
+  direct route between the two devices.
+- Network round trip: median 17–20 ms, with spikes of 290–440 ms.
+- **Receive buffers** (average time a frame waits before it is shown): **Mac 94 ms** (Chrome,
+  with the minimal buffer setting applied), **iPad 125 ms** (Safari; up to 227 ms).
+- So most of the extra lag (roughly 250–350 ms in all, partly estimated) is the two receive
+  buffers, about 220 ms. Both browsers grow their buffer when frames arrive unevenly (Wi-Fi
+  jitter), and shrink it only slowly. The network itself adds about 20 ms.
+- Not about lag: the first connection (10:32) delivered no frames for 106 s, and the iPad did
+  not react to the Mac's restart requests until the page reloaded (10:33:51). Not explained
+  yet; Safari in the background would explain it.
+
+### Tried: a bitrate setting (removed again)
+
+- A bitrate cap per direction, chosen on the iPad: **Bitrate, each way** in its panel
+  (3 / 2 / 1.5 / 1 / 0.6 Mbit/s, remembered, reconnects), or `?kbps=` in its address. The
+  offer carries it and the Mac follows. Default unchanged (3 Mbit/s).
+- Both pages' panels, their `link` reports and the terminal line show the cap (`(cap 1000)`).
+- `KBPS=1000 npm run check:stream -- …` runs the headless check with a cap; its table now
+  shows what each side sends.
+
+### Verified (headless, this Mac, VP8, no Wi-Fi)
+
+| cap | sent per direction | round trip, median by fill mode |
+|---|---|---|
+| 3000 | 3017–3048 kb/s | 99–100 ms |
+| 1000 | 933–1025 kb/s | 99–100 ms in one run, 67–69 ms in another |
+| 600 | 584–606 kb/s | 63–93 ms |
+
+The cap holds in both directions. The round-trip numbers are too noisy to tell whether a lower
+bitrate helps: the Mac was busy (detection 30–67 ms, against 28 ms yesterday), and without
+Wi-Fi there is no queuing, which is what a lower bitrate is meant to reduce. Typecheck passes.
+
+### On the real iPad (16:39–16:42 UTC, `?latency`, front and back camera)
+
+| cap | iPad sends / gets | round trip median (p95) | iPad buffer | Mac buffer | reports |
+|---|---|---|---|---|---|
+| 3000 | 1703 / 1944 kb/s | 177 ms (202) | 49 ms | 28 ms | 16 |
+| 2000 | 1869 / 1946 kb/s | 143 ms (177) | 29 ms | 36 ms | 4 |
+| 1500 | 1211 / 1424 kb/s | 139 ms (173) | 26 ms | 36 ms | 2 |
+| 1000 | 977 / 967 kb/s | 112 ms (229) | 21 ms | 31 ms | 3 |
+| 600 | 505 / 580 kb/s | 135 ms (174) | 37 ms | 25 ms | 7 |
+
+- No visible improvement at lower bitrates; **kept at 3 Mbit/s**.
+- At 640×480 the encoders use only about 1.7–1.9 Mbit/s, so a cap of 3 or 2 changes nothing;
+  only 1.5 and below hold them back.
+- The lower caps had only 5–15 s each (2–7 reports), too little to tell their differences
+  apart from chance.
+- The network was much calmer than in the morning: round trip 7–10 ms (morning 17–20),
+  buffers iPad 21–49 ms and Mac 25–36 ms (morning 125 and 94). On this network, the round trip
+  of about 180 ms at 3 Mbit/s is mostly the fixed steps: compressing and decompressing twice,
+  and the processing on the Mac. A lower bitrate does not shorten those.
+- The first real-Wi-Fi round-trip number: 177 ms median at 3 Mbit/s (headless, without Wi-Fi:
+  68–100 ms).
+
+The bitrate setting was then removed again at the user's request and never merged: streaming
+stays at 3 Mbit/s. Raw logs: `captures/device-report-stream.jsonl` (morning session) and
+`captures/device-report-bitrate.jsonl` (bitrate test), both gitignored.
+
+## 2026-11-18 · grow and capture merged into main
+
+Both branches were merged into `main` locally, conflicts resolved by hand, each merge committed
+by the user.
+
+- **grow** (`1ebb9a5`): one conflict, in README.md. On GitHub the line "Critical-design
+  prototype (v0, laptop webcam) …" had been deleted (`d43a858`); `grow` still had it, with its
+  new line about grow mode below. Resolved: the deleted line stays deleted, the grow line stays.
+- **capture** (`af33429`): three conflicts, all from both branches adding to the same places.
+  DEVLOG.md (both added sections at the end: both kept, grow first); `src/main.ts` (imports:
+  both kept); `src/ui/panel.ts` (key hint: now lists both `G` and `V`). README.md,
+  `pipeline.ts` and the stream files merged by themselves.
+- Branches `grow`, `stream` and `capture` deleted once their work was in `main` on GitHub;
+  GitHub now only has `main`.
+
+Checked after the capture merge, headless Chrome with the moving clip as webcam: typecheck
+passes; MI-GAN 13.7 fps, Telea 30, stylised 30, grow 30.2 fps (effect 4.3 ms); no console
+errors. Screen recording in grow mode (`?mode=grow&recordMax=3`), once with the mask overlay off
+and once on: two MP4 files; a frame from the second shows the phone at 2×, mirrored, without
+the overlay.
+
+README brought up to date afterwards: recording also saves files (`V`, not only `S`); the
+streaming mode's "nothing is recorded" now says the stream itself is not stored; the
+streaming steps mention grow mode and `G`; the real iPad's round trip (177 ms) is in "Streaming
+mode"; grow mode's limits say it is not yet tested in streaming mode; the structure lists the
+files that were missing.
+
+Not verified: grow mode in streaming mode; the iPad's Screenshot and Record buttons after the
+merge (the stream files merged without conflicts, and grow mode does not touch them).
