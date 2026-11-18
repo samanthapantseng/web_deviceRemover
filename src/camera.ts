@@ -12,7 +12,7 @@ export interface FrameSource {
   stop(): void;
 }
 
-function fit(w: number, h: number): { width: number; height: number } {
+export function fit(w: number, h: number): { width: number; height: number } {
   const s = Math.min(1, MAX_SIDE / Math.max(w, h));
   return { width: Math.round((w * s) / 2) * 2, height: Math.round((h * s) / 2) * 2 };
 }
@@ -58,7 +58,7 @@ export async function openCamera(facing: CameraFacing = 'front'): Promise<FrameS
  * (Polling `currentTime` is not enough: it advances between frames, so the same camera
  * frame would be processed twice.)
  */
-function frameWaiter(video: HTMLVideoElement): () => Promise<void> {
+export function frameWaiter(video: HTMLVideoElement): () => Promise<void> {
   const supported = typeof (video as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback === 'function';
   if (!supported) {
     let last = -1;

@@ -3,8 +3,9 @@
 A live camera view in which phones are erased from people's hands, leaving the empty pose.
 Critical-design prototype (v0, laptop webcam), inspired by Jonah Brucker-Cohen's *Device Inversions*.
 
-Everything runs in the browser, on the device. No frame leaves the machine, and nothing is
-saved unless you press the snapshot key.
+It runs in the browser, in one of two ways (see "Two ways to run it"): on the Mac alone with
+its webcam, or with an iPad as camera and screen while the Mac does the work. Either way no
+frame leaves the local network, and nothing is saved unless you press the snapshot key.
 
 ```
 camera → YOLO11-seg (phone-like objects) → tracker (watch 1.5 s, then decide) → mask stabiliser
@@ -23,14 +24,83 @@ npm install
 npm run models
 ```
 
-```bash
-npm run dev
-```
-
-Then open <http://localhost:5173/> in Chrome and allow the camera.
-
 `npm run models` needs `curl` and [`uv`](https://docs.astral.sh/uv/). It downloads MI-GAN
 (30 MB, checksum verified) and exports the YOLO models, into `public/models/`.
+
+## Two ways to run it
+
+All commands are typed in Terminal on the Mac, in the project folder
+(`cd` into it first). Ctrl-C in a Terminal window stops what runs there.
+
+| | Mac only | iPad streaming |
+|---|---|---|
+| camera | the Mac's webcam | the iPad's camera |
+| picture shown on | the Mac's screen | the iPad's screen |
+| models run on | the Mac | the Mac |
+| Terminal windows | one | two |
+| open on the Mac | <http://localhost:5173/> in Chrome | opens by itself |
+| open on the iPad | – | `https://<Mac's address>:8443/stream.html` in Safari |
+
+### Mac only (the laptop's webcam)
+
+1. Terminal: start the server and leave the window open.
+
+   ```bash
+   npm run dev
+   ```
+
+2. In Chrome on the Mac, open <http://localhost:5173/> and allow the camera.
+
+`F` for fullscreen, `D` for the debug panel (see "Keys").
+
+### iPad streaming (the iPad's camera and screen, the Mac does the work)
+
+The iPad only films and shows; the Mac runs the models and sends the finished picture back.
+Before the first time, the iPad and the Mac each have to trust the project's certificate once:
+the iPad as in "Testing on the iPad" (steps 1 to 3), the Mac as in "Streaming mode" (Keychain
+Access).
+
+1. **Terminal window 1, the server.** Start it and leave the window open:
+
+   ```bash
+   npm run dev:ipad
+   ```
+
+   Wait until it says `ready`. Note the address after `Network:`, for example
+   `https://10.21.12.136:8443/`: that is the Mac's address on this Wi-Fi.
+
+2. **Terminal window 2, the Mac's processing window.** Open a second Terminal window (⌘N),
+   `cd` into the project folder again, and run:
+
+   ```bash
+   npm run stream:mac
+   ```
+
+   A Chrome window opens and says "waiting for the iPad…". (A privacy warning there means the
+   Mac does not trust the certificate yet: **Advanced → Proceed to localhost** works for now.)
+   Leave this window open and visible; the fill mode is changed here (`1` `2` `3`, `D` for the
+   panel).
+
+3. **On the iPad**, on the same Wi-Fi as the Mac: in Safari, open the address from step 1 with
+   `stream.html` added, for example `https://10.21.12.136:8443/stream.html`, and allow the
+   camera. After a few seconds the picture appears, phones removed. Double-tap for the iPad's
+   own small panel.
+
+To stop: Ctrl-C in both Terminal windows. The address changes on another network; step 1 always
+prints the current one. If port 8443 is already taken (another `npm run dev:ipad` running),
+use another port in both windows and on the iPad:
+
+```bash
+npm run dev:ipad -- --port 8444
+```
+
+```bash
+PORT=8444 npm run stream:mac
+```
+
+More on how it works, what to do when it freezes, and the numbers: "Streaming mode" below.
+The iPad can also run everything on its own, without the Mac, but the 2018 iPad Pro is too slow
+for that: see "Testing on the iPad".
 
 ## Keys
 
@@ -103,6 +173,89 @@ phone took 0.5 to 1.1 s per frame, MI-GAN 0.2 to 0.55 s, Telea about 0.1 s. With
 loaded at once, Safari closed the page after 10 to 20 s (most likely out of memory); now only
 the fill in use is loaded. Lighter settings to try on the iPad, in the panel:
 **Detector: yolo11s · 320** and **Fill: Telea** or **Stylised**.
+
+## Streaming mode (the iPad's camera and screen, the Mac does the work)
+
+Plan B for the exhibition. The iPad only films and shows; the Mac runs the models at its own
+speed. The iPad sends its camera to the Mac, and the Mac sends the finished picture back:
+
+```
+iPad, Safari: /stream.html                      Mac, Chrome: /?source=stream
+  camera ───────── video ───────────────────────▶ the same pipeline as always
+  screen ◀──────── video ──────────────────────── the finished picture
+```
+
+The two pages connect directly with WebRTC, the technology video calls use, on the local
+network only: no internet, no outside servers. The dev server only introduces them to each
+other. Nothing is recorded. The iPad never shows its own raw camera; it shows only what comes
+back from the Mac, so phones stay hidden even while things start up.
+
+**Start it** as in "Two ways to run it" above. Mac and iPad have to be on the same network; your
+own small travel router or a phone hotspot is better than venue Wi-Fi (see below). The order
+does not matter, and either side can be reloaded at any time: the iPad reconnects by itself. Settings for the fill and the detector are made on the Mac (`D` for the panel). On the
+iPad, double-tap for its own small panel: camera front/back, mirror, fill the screen,
+reconnect, and the connection's numbers.
+
+**Once, on the Mac:** WebGPU needs a page Chrome trusts, so the Mac has to trust the same
+certificate authority the iPad does (`npm run stream:mac` says when it doesn't). Open
+**Keychain Access**, drag in `~/Library/Application Support/Device Remover/certs/device-remover-ca.pem`,
+double-click **Device Remover local CA**, open **Trust**, set **When using this certificate** to
+**Always Trust**, close the window and enter your password. (For a quick test, clicking
+**Advanced → Proceed to localhost** on the warning also works.)
+
+**The Mac's window** must stay open and should stay visible: Chrome slows down hidden windows,
+and the iPad would then freeze. `npm run stream:mac` opens it in a separate Chrome profile with
+that slowing-down switched off, and keeps the Mac awake while it runs. Keep the Mac on power.
+
+**If it doesn't connect, or freezes:**
+
+- The iPad's panel shows the connection's numbers. The Mac's terminal prints both pages'
+  numbers every 30 s (`link …`) and every connection made (`[stream] …`).
+- Without a picture, the iPad holds the last one, and after 3 s a small orange dot appears
+  bottom right. It tries again after 1, 2, 4 and then every 5 s, for as long as it is open.
+- It repairs itself: the Mac tells the iPad when nothing arrives from it any more, the iPad
+  restarts its camera if the camera stops delivering, and as a last resort the iPad page
+  reloads (when the Mac has asked three times in 30 s).
+- So that a reload never brings back Safari's camera question with nobody there to answer it:
+  on the iPad, **Settings → Apps → Safari → Camera → Allow** (or, for this site only, the page
+  menu in Safari's address bar → Website Settings → Camera → Allow).
+- The codec is H.264 by default (hardware on both devices). If the picture stutters or freezes
+  repeatedly, try `?codec=vp8` on the iPad's address; the Mac follows.
+- Venue and university Wi-Fi often stop devices from reaching each other, and at an exhibition
+  the Wi-Fi is full of visitors' phones. Your own router (no internet needed) avoids both.
+- Anyone on the same network who opens the stream page takes over the Mac's picture (the newest
+  page wins). Another reason for your own network.
+- `?latency` on the iPad's address measures the round trip with a counter in the corner
+  (shown in its panel and the terminal). Only for testing: the counter is visible.
+
+**Measured on this Mac** (both pages in headless Chrome on the M2 Max, a video file as the
+iPad's camera, VP8; Wi-Fi not included):
+
+| | MI-GAN | Telea | Stylised |
+|---|---|---|---|
+| frames shown on the "iPad" | 30 fps | 28 fps | 30 fps |
+| fill updates on the Mac | 13.6 fps | 28.7 fps | 30.1 fps |
+| round trip iPad → Mac → iPad, median (95 %) | 68 ms (86) | 68 ms (101) | 68 ms (84) |
+
+Picture back after: iPad page reloaded 0.3 s; connection dead without notice 4.6 s; the iPad
+stopped sending (only the Mac can notice) 4.7 s; Mac page reloaded 0.6 s; Mac page closed for
+10 s and reopened 1.1 s. A camera restart on the iPad keeps the connection.
+
+**Test on the real iPad**, and note what you see:
+
+1. Start it as above, with the iPad on the network you will use (or as close to it as you can),
+   and Safari's camera permission set to Allow (see above).
+2. Look: does a phone disappear? How does the lag feel when you wave? Is the picture sharp
+   enough on the 12.9" screen?
+3. Break it: reload the iPad page; turn the iPad's Wi-Fi off for 10 s and on again; reload the
+   Mac page; leave it running for 30 min.
+4. Once, add `?latency` to the iPad's address, for the round-trip number.
+5. For the show: Guided Access on the iPad (Settings → Accessibility → Guided Access) keeps
+   Safari in front. Restart the Mac before, and open only what the piece needs: when the Mac
+   ran out of memory in a test (many apps open, 19 days without restart), the stream slowed to
+   a fill update every second or so.
+
+The numbers end up in the Mac's terminal and in `captures/device-report.jsonl`.
 
 ## Exporting the YOLO model by hand
 
@@ -259,8 +412,15 @@ src/
   ui/panel.ts        debug panel
   still.ts           still-image test page
   devReport.ts       iPad mode only: sends timings and errors to the Mac's terminal
+  stream/            streaming mode: ipad.ts (the iPad's page), remoteSource.ts (the Mac's
+                     side), link.ts (WebRTC set-up, statistics), signal.ts, latency.ts
+server/
+  signalHub.ts       streaming mode: introduces the two pages to each other (dev server only)
+stream.html          streaming mode: the iPad's page
 scripts/
   make_cert.sh       https certificate for npm run dev:ipad
+  stream_mac.sh      streaming mode: opens the Mac's page (npm run stream:mac)
+  stream_check.mjs   streaming mode, tested on this Mac (npm run check:stream)
 ```
 
 To add a mode (phone inflating, and so on), implement `Effect` in `src/effects/` and pass it

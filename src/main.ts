@@ -7,6 +7,7 @@ import { FillSet } from './fill';
 import { Pipeline } from './pipeline';
 import { FILL_ORDER, SettingsStore, STYLE_ORDER } from './settings';
 import { downloadPng, sideBySide, timestamp } from './snapshot';
+import { openRemote, type RemoteSource } from './stream/remoteSource';
 import { DebugPanel, isTouchDevice } from './ui/panel';
 
 startReporting();
@@ -85,9 +86,14 @@ async function main(): Promise<void> {
   const camParam = params.get('camera');
   const facing: CameraFacing = camParam === 'front' || camParam === 'back' ? camParam : settings.camera;
   let source: FrameSource;
-  say(still ? 'loading image…' : 'waiting for camera…');
+  // Streaming mode (?source=stream, npm run dev:ipad only): the frames come from the iPad's
+  // stream page and the result goes back to it. The iPad mirrors what it shows, so the Mac does not.
+  const streamMode = params.get('source') === 'stream';
+  let remote: RemoteSource | null = null;
+  if (streamMode) settings.mirror = false;
+  say(still ? 'loading image…' : streamMode ? 'waiting for the iPad…' : 'waiting for camera…');
   try {
-    source = still ? await openStill(still) : await openCamera(facing);
+    source = still ? await openStill(still) : streamMode ? (remote = await openRemote(say)) : await openCamera(facing);
   } catch (err) {
     const denied = err instanceof DOMException && err.name === 'NotAllowedError';
     say(denied ? 'Camera access was blocked. Allow it for this page and reload.' : `Camera error: ${(err as Error).message}`, true);
@@ -218,6 +224,8 @@ async function main(): Promise<void> {
   }
   report('status', { text: `detector ${model} on ${detector.backend}, camera ${source.label}` });
   pipeline.start();
+  // Streaming mode: only now, with the detector running, does the iPad get pictures back.
+  remote?.sendBack(view);
   const runFor = Number(params.get('runFor'));
   if (runFor > 0) setTimeout(() => (pipeline.stop(), say(`stopped after ${runFor} s (?runFor)`)), runFor * 1000);
   // Only the fill in use is loaded; another one loads when it is picked (stylised meanwhile).

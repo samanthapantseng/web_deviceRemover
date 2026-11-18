@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin, type ServerOptions } from 'vite';
+import { formatLinkReport, signalHub } from './server/signalHub.ts';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const capturesDir = join(root, 'captures');
@@ -121,6 +122,12 @@ function devReport(): Plugin {
               `${who} display ${n(r.displayFps)} fps · fill ${n(r.pipelineFps, 1)} fps · detect ${n(r.detectMs)} ms · ` +
                 `inpaint ${n(r.inpaintMs)} ms · phones ${n(r.phones)} · ${String(r.detector)} · ${String(r.fill)}`,
             );
+          } else if (r.kind === 'link') {
+            // Streaming mode: connection stats from the iPad's stream page or the Mac page.
+            const key = `${who} link`;
+            if (now - (lastStatsPrint.get(key) ?? 0) < 30_000) return;
+            lastStatsPrint.set(key, now);
+            console.log(formatLinkReport(who, r));
           } else if (r.kind === 'hello') {
             console.log(`${who} connected · WebGPU ${r.webgpu ? 'yes' : 'NO'} · ${String(r.gpu ?? '')} · ${String(r.userAgent)}`);
           } else if (r.kind === 'still') {
@@ -170,9 +177,12 @@ function printIpadUrl(): Plugin {
         } catch {
           /* not macOS: the Network addresses Vite prints work too */
         }
+        const port = server.config.server.port ?? 8443;
         setTimeout(() => {
-          console.log(`\n  iPad:  https://${host}.local:8443/    still test: https://${host}.local:8443/still.html`);
-          console.log('  The iPad must be on the same Wi-Fi and trust the certificate (README, "Testing on the iPad").\n');
+          console.log(`\n  iPad:  https://${host}.local:${port}/    still test: https://${host}.local:${port}/still.html`);
+          console.log('  The iPad must be on the same Wi-Fi and trust the certificate (README, "Testing on the iPad").');
+          console.log(`  Streaming mode: iPad  https://${host}.local:${port}/stream.html  (or the Network address + /stream.html)`);
+          console.log(`                  Mac   npm run stream:mac  (opens https://localhost:${port}/?source=stream)\n`);
         }, 50);
       });
     },
@@ -184,7 +194,7 @@ export default defineConfig(({ mode }) => {
   return {
     // Relative base so the build works from any sub-path (GitHub Pages project sites).
     base: './',
-    plugins: [devCaptures(), devReport(), ...(ipad ? [printIpadUrl()] : [])],
+    plugins: [devCaptures(), devReport(), ...(ipad ? [signalHub(), printIpadUrl()] : [])],
     server: {
       ...(ipad ? ipadServer() : { headers: isolationHeaders }),
       // Test stills (faces) are only handed out by devCaptures above, and only to this Mac.
