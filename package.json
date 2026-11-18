@@ -14,7 +14,9 @@
     "copy-ort": "node scripts/copy_ort.mjs",
     "postinstall": "node scripts/copy_ort.mjs",
     "check": "node scripts/headless_check.mjs",
-    "stills": "node scripts/stills_report.mjs"
+    "stills": "node scripts/stills_report.mjs",
+    "stream:mac": "bash scripts/stream_mac.sh",
+    "check:stream": "node scripts/stream_check.mjs"
   },
   "dependencies": {
     "@techstark/opencv-js": "^4.12.0-release.1",

@@ -325,3 +325,120 @@ window, a phone that is sure about a third of the time stays counted 99 % of the
   later.
 - Chrome's fake camera cropped a portrait clip to 480×480; what Safari's camera delivers in
   portrait is to be seen on the device.
+
+## 2026-11-17 · streaming mode (plan B, branch `stream`)
+
+The iPad is 25 to 40 times too slow to run the models (session 3). Plan B, built on its own
+branch while plan A (the iPad on its own) goes on: the iPad only films and shows, the Mac does
+the work. The brief is in `prompts/stream-mode.md`.
+
+How it works: the iPad's page (`stream.html`) sends its camera to the Mac's page
+(`/?source=stream`) over WebRTC; the Mac runs the unchanged pipeline on it and sends the
+finished canvas back (`captureStream`). The dev server introduces the two pages to each other
+(`server/signalHub.ts`, Server-Sent Events plus POST, no new dependency). No STUN or TURN
+server, so only local addresses are used. The Mac only starts sending once the detector runs,
+so the iPad never shows unprocessed frames; until then, and during any outage, the iPad holds
+its last picture.
+
+Recovery, all automatic:
+
+- The iPad makes a new connection when the Mac page appears, when the connection fails, or when
+  no frame has come for 3 s; it retries after 1, 2, 4, 5, 5… s, for good.
+- The Mac answers every new offer and keeps its models loaded.
+- The Mac watches the other direction, which the iPad cannot see (it keeps getting the Mac's
+  picture even when its own frames stopped arriving): no frame from the iPad for 3 s, and it
+  asks the iPad for a new connection.
+- The iPad restarts its camera when the camera stops delivering frames (without a reload,
+  which could bring back Safari's camera question).
+- Last resort: when the Mac has asked three times in 30 s, the iPad page reloads.
+
+### Verified (this Mac only, two headless Chromes; not yet on the iPad)
+
+`npm run check:stream` (new): one Chrome plays the iPad (video file as camera, iPad user agent),
+the other the Mac. Round trip measured with a frame counter drawn as a bar code into the
+corner (`?latency`) and read back from the returned frames. Final run, VP8:
+
+| fill | frames shown on the "iPad" | fill updates on the Mac | detect | round trip, median (95 %) |
+|---|---|---|---|---|
+| MI-GAN | 30 fps | 13.6 fps | 25 ms | 68 ms (86) |
+| Telea | 28 fps | 28.7 fps | 25 ms | 68 ms (101) |
+| Stylised | 30 fps | 30.1 fps | 25 ms | 68 ms (84) |
+
+The fill rates are those of the standalone page (`npm run check` in the same session: MI-GAN
+13.6, Telea 29.2, stylised 30). First picture 1.4 s after opening the iPad page (detector
+cached). Picture back after:
+
+| interruption | picture back after |
+|---|---|
+| iPad page reloaded | 0.3 s |
+| connection dead without notice | 4.6 s (3 s watchdog, 1 s pause, connect) |
+| the iPad stops sending, only the Mac notices | 4.7 s (Mac receives 22 fps again) |
+| iPad camera restarted | connection kept, Mac receives 23 fps 3 s later |
+| Mac page reloaded, models reload | 0.6 s |
+| Mac page closed for 10 s, reopened | 1.1 s (meanwhile: last picture held, indicator shown) |
+
+The phone is removed in the frames that come back (`captures/stream_sheet.jpg`). The standalone
+page and `npm run build` are unchanged.
+
+**30-minute soak** (`npm run check:stream -- … --minutes 30`, MI-GAN, VP8), one line a minute:
+
+- Minutes 1 to 12: steady. Round trip 67 to 69 ms (95 %: 101), 22 to 30 fps shown on the
+  "iPad", no reconnect, Mac heap going up and down between 71 and 137 MB (no growth). MI-GAN
+  filled at 7.5 to 8.6 fps, not 13.6: the user's own Chrome had a tab at 90 to 100 % CPU the
+  whole time.
+- From minute 13 the whole Mac was overloaded: load average from about 5 to over 200 (640 the
+  next morning), swap 15 GB of 16, later 20 of 21.5 GB, 10 GB held by the kernel. The stream
+  slowed to 12 to 17 fps shown, 1.5 fps fill and 240 to 290 ms round trip, but kept running:
+  the Mac's watchdog asked for new connections and the iPad page reloaded itself twice, as
+  designed. At minute 27 the test script itself tripped over such a reload (fixed: the soak now
+  notes the reload and carries on).
+- So: no sign of the stream wearing down over time while the machine was healthy, and it
+  survives a machine in trouble, slowly. A clean 30 minutes on a freshly restarted Mac is still
+  to be done.
+
+### What failed, and the fix
+
+- **The Mac processed one frozen frame.** The fill ran at 3.5 fps on the same picture: the
+  "iPad" had stopped sending. In headless Chrome the fake camera stops delivering frames as soon
+  as its first H.264 connection starts; after a page reload it works, and with VP8 both
+  directions ran at 30 fps from the start. Most likely a quirk of the test set-up (fake camera
+  plus Chrome's H.264 encoder); Safari on the iPad uses H.264 by default. The pages keep
+  preferring H.264 (hardware encoders on both devices); the check uses `?codec=vp8`, and the
+  same parameter on the real iPad switches both directions to VP8.
+- **That stall was invisible to the iPad**: it kept getting the Mac's picture at 30 fps, only
+  the content no longer changed. Hence the Mac's watchdog, the camera restart and the reload as
+  last resort. With H.264 in the test, the repair took about 20 s (three requests, then the
+  reload) and the stream then ran normally (28 fps, 84 ms round trip).
+- **One slow full run with VP8 too**: the Mac received only a few frames a second for a while.
+  Not reproduced in four later runs; the user's own Chrome had a tab at 100 % CPU on the same
+  Mac. The Mac's watchdog would now ask for a new connection if it happened again.
+- **A received WebRTC stream only renders into a video element that is in the page.** The Mac's
+  video is now in the page, 4 px, behind the picture. (In the end not the cause of the frozen
+  frame, but needed.)
+- **The first run hit a server restart** (my own tsconfig change) and loaded half a page.
+- **"Mac page hidden" warning when closing it.** A closing page turns hidden for a moment; the
+  warning now waits 2 s.
+
+### Not verified
+
+- Anything about Wi-Fi: both pages ran on one Mac. On a real network the round trip adds the
+  Wi-Fi delay twice.
+- Hidden addresses: the Mac page has no camera permission, so Chrome hides its local address
+  behind a random `.local` name, which the school network does not resolve. Expected to work
+  anyway, because the iPad (with camera permission) shares its real address and the Mac
+  reaches it; the panel shows the route (`host → prflx` on the iPad would be this case).
+- This Mac does not trust the Device Remover certificate yet, so the Mac's window shows a
+  warning until it is trusted in Keychain Access (README, "Streaming mode"). Clicking through
+  works for a test.
+- Safari: support for `jitterBufferTarget` (smallest buffer) and `setCodecPreferences` (both
+  checked before use; the panel says which applied), and whether a page reload asks for the
+  camera again (README: set Safari's camera permission to Allow).
+- `npm run stream:mac` was only dry-run (with Chrome replaced by `true`): the certificate
+  check, the server check and `caffeinate` work; the Chrome window itself was not opened here.
+
+### Open
+
+- Restart the Mac (19 days up, swap full) and re-run the 30-minute soak.
+- The real iPad test (README checklist).
+- What the iPad should show during an outage: now the last picture with a small orange dot;
+  fading to black is a one-line change.
