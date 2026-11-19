@@ -1,7 +1,14 @@
 import type { CameraFacing } from "./camera";
 
-/** What happens to a phone: erased ("remove") or blown up ("grow"). */
-export type ModeId = "remove" | "grow";
+/**
+ * What happens to a phone: erased ("remove"), blown up ("grow"), or listened to ("hijack": the
+ * phone in focus gets a soundscape of its own, in headphones; the picture stays as it is).
+ */
+export type ModeId = "remove" | "grow" | "hijack";
+/** Hijack mode: the kinds of sound a person can get (src/audio/voices.ts). */
+export type CharacterId = "drone" | "pulse" | "wash" | "plucks" | "beat";
+/** Hijack mode: "auto" gives each person their own character; otherwise everyone gets that one. */
+export type HijackSound = "auto" | CharacterId;
 /**
  * Grow mode: what is enlarged. "hand": the mask (as "mask") plus the hand on the phone, from the
  * detector's person mask (`growReach`); "mask": the detector's mask, with the dents fingers make
@@ -83,6 +90,24 @@ export interface Settings {
      * size; mask: the cut-out itself). Damps wobble.
      */
     growSmoothing: number;
+    /** Hijack mode: which sound a person gets (see HijackSound). */
+    hijackSound: HijackSound;
+    /** Hijack mode: loudness, 0..1 (the output is limited whatever this is). */
+    hijackVolume: number;
+    /**
+     * Hijack mode: radius of the focus zone around the centre of the picture, as a share of half
+     * the picture's shorter side. A phone inside it can be listened to; the closer to the centre,
+     * the clearer.
+     */
+    hijackZone: number;
+    /** Hijack mode: how long a new phone is watched before it counts (ms). Replaces `watchMs` there. */
+    hijackWatchMs: number;
+    /** Hijack mode: how long the sound carries on when the phone in focus is lost (ms), before it fades. */
+    hijackHoldMs: number;
+    /** Hijack mode: seconds of holding a phone until its sound has fully built up. */
+    hijackBuildSeconds: number;
+    /** Hijack mode: draw the focus zone and a ring around the phone being listened to. */
+    hijackOverlay: boolean;
 }
 
 export const DEFAULTS: Settings = {
@@ -112,6 +137,13 @@ export const DEFAULTS: Settings = {
     growMax: 2,
     growSeconds: 5,
     growSmoothing: 0.5,
+    hijackSound: "auto",
+    hijackVolume: 0.5,
+    hijackZone: 0.6,
+    hijackWatchMs: 500,
+    hijackHoldMs: 2000,
+    hijackBuildSeconds: 30,
+    hijackOverlay: true,
 };
 
 /**
@@ -126,7 +158,9 @@ const OLD_DEFAULTS: { [K in keyof Settings]?: Settings[K][] } = {
     growSeconds: [30],
 };
 
-export const MODE_ORDER: ModeId[] = ["remove", "grow"];
+export const MODE_ORDER: ModeId[] = ["remove", "grow", "hijack"];
+export const CHARACTERS: CharacterId[] = ["drone", "pulse", "wash", "plucks", "beat"];
+export const HIJACK_SOUNDS: HijackSound[] = ["auto", ...CHARACTERS];
 export const GROW_SHAPES: GrowShape[] = ["hand", "mask", "hull", "rectangle"];
 
 export const FILL_ORDER: FillId[] = ["migan", "telea", "stylised"];

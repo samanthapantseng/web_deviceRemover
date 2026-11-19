@@ -2,6 +2,8 @@
 
 A live camera view in which phones are erased from people's hands, leaving the empty pose.
 A second mode, **grow**, does the opposite: the phone inflates (see "Grow mode").
+A third, **hijack**, leaves the picture alone: aim the camera at someone's phone and hear
+"their" soundscape in headphones, made up from what the camera sees (see "Hijack mode").
 
 It runs in the browser, in one of two ways (see "Two ways to run it"): on the Mac alone with
 its webcam, or with an iPad as camera and screen while the Mac does the work. Either way no
@@ -12,6 +14,7 @@ screen recording (`V`).
 camera → YOLO11-seg (phone-like objects) → tracker (watch 1.5 s, then decide) → mask stabiliser
        → remove: fill (MI-GAN / Telea / stylised) → composite
        → grow:   the phone's mask + the hand on it → draw it bigger, growing over time
+       → hijack: the phone nearest the centre → a synthesised soundscape → headphones
 ```
 
 ## Setup
@@ -109,6 +112,7 @@ for that: see "Testing on the iPad".
 | Key | |
 |---|---|
 | `G` | mode: remove ↔ grow |
+| `H` | hijack mode on; again: back to the mode before (see "Hijack mode") |
 | `1` `2` `3` | fill mode: MI-GAN, Telea, stylised (press `3` again to step through blur / flat / void) |
 | `M` | mask overlay: mask in magenta, erased objects in yellow, objects being watched in orange (dashed), objects decided against in grey (dashed), inpaint window in cyan |
 | `S` | snapshot: before and after of the same frame, side by side, as a PNG download |
@@ -340,7 +344,8 @@ uv run --python 3.12 --with onnx python scripts/inspect_onnx.py public/models/mi
   `captures/still-*.png` with its phone score with and without the top-category check, and
   what the model really thinks the turned-away objects are.
 - **Live view on a still image**: `http://localhost:5173/?src=captures/x.png`. Add
-  `&mode=grow` (or `&mode=remove`) to start in that mode without changing the saved setting.
+  `&mode=grow`, `&mode=hijack` (or `&mode=remove`) to start in that mode without changing the
+  saved setting.
 - The still page also shows grow mode, fully grown: mask + hand, the mask with finger gaps
   filled, the exact mask, the convex outline and the rectangle.
 - **Headless check**: plays a clip as a fake webcam in the installed Chrome and prints
@@ -357,6 +362,12 @@ npm run check -- captures/clip_moving.y4m
 - `?backend=wasm` forces the CPU fallback; `?model=yolo11n-seg` tries another detector.
 - The check ends with grow mode (full size in 3 s) and writes `captures/check_grow_sheet.jpg`:
   4 views a second apart while it grows, then 4 consecutive views at full size.
+- **Hijack check**: the same fake webcam, with the sound measured instead of heard (see
+  "Hijack mode"); also writes the five characters as sound files to `captures/`.
+
+```bash
+npm run check:hijack -- captures/clip_moving.y4m
+```
 
 ## Measured performance
 
@@ -465,6 +476,92 @@ Limits:
 - Not yet tested in streaming mode. The Mac runs grow mode the same way there (the same
   pipeline); the iPad only shows the result.
 
+## Hijack mode
+
+`H` (or "Mode" in the panel) switches it on; `H` again goes back to the mode before. So far
+for the Mac on its own (its webcam, headphones on the Mac); not tried in streaming mode.
+
+Aim the camera at someone's phone and hear "their" soundscape in headphones. Nothing is
+intercepted: the sound is synthesised in the browser (Web Audio, no recordings) from a few
+things the camera sees of the phone. The picture stays as it is, with a faint dashed circle in
+the middle, the **focus zone**, and a white ring around the phone being listened to ("Hijack:
+show focus zone and ring" in the panel turns both off).
+
+**Sound only after a click.** Browsers play sound only after a click or key press on the page.
+Until then a note says "click or press any key for sound". Pressing `H` counts.
+
+**What is heard**
+
+- **Silence**, unless a phone is in focus. A phone is in focus once the tracker has decided on
+  it (the same watching as in the other modes, but for 0.5 s instead of 1 s: "Hijack: watch a
+  new phone for") and it has been inside the focus zone for 0.25 s.
+- Then that person's sound **tunes in** over about a second: a short sweep of radio-like
+  noise, and the sound going from muffled and slightly flat to clear.
+- Each person gets one of five **characters**, dealt in turn (two people in a row never get the
+  same one), each with its own key, tempo and pattern:
+  - **low drone**: detuned saws and a sub, breathing slowly through a filter
+  - **soft pulse**: a slow repeating figure of soft notes with an echo
+  - **noise wash**: filtered noise swelling and receding like breath or surf, over a rumble
+  - **bell plucks**: sparse, irregular bell notes with an echo, like far-off notifications
+  - **muffled headphone beat**: kick, snare, hi-hat and bass, as if leaking from earbuds
+- "Hijack: sound" in the panel gives everyone the same character instead (to try them out).
+  **Test sound** in the panel plays one for 5 s without a phone: each press the next one, or
+  the one chosen there.
+
+**What the camera changes in the sound**
+
+| from the camera | in the sound |
+|---|---|
+| how close the phone is to the centre of the zone | muffled at the edge (the beat: tinny, as if leaking from earbuds), clear in the inner 30 % |
+| where it is, left to right | left to right in the headphones, as on screen: with the mirror on (`X`), as in a mirror |
+| how big it is in the picture | close: louder and drier; far: quieter, with more room |
+| how long it has been held | more layers (a fifth, higher notes, the bass, a longer echo), full after 30 s ("Hijack: holding time to full build-up") |
+| how much it moves | busier rhythm, faster tremolo and swells (under half a phone length a second counts as still) |
+
+**Focus** (`src/effects/hijack.ts`):
+
+- The phone in focus stays in focus while it is inside the zone (with 25 % slack), and for 2 s
+  after it is lost ("Hijack: keep sound when phone lost"), so a detection dropout does not cut
+  the sound. Then the sound fades out over about 1.5 s.
+- Another phone takes over only when it is clearly more centred (by a quarter of the zone's
+  radius) for 0.6 s, and not within 1.5 s of the last switch.
+- Leaving hijack mode fades the sound out; so does the camera stopping (no new frame for 3 s).
+- "Hijack: focus zone (radius)" sets the zone's size (default: 30 % of the picture height).
+
+**Volume and safety.** "Hijack: volume" in the panel (default 50 %). At the end of the chain a
+limiter, a soft clipper and a fixed ceiling keep every sample below -1.9 dBFS, whatever the
+volume setting or a fault in a sound. How loud that is in the headphones depends on the Mac's
+own volume.
+
+**Screen recording** (`V`) in hijack mode has the sound too (in Chrome: MP4, H.264 + AAC).
+
+**Measured** (`npm run check:hijack`: headless Chrome on the M2 Max, the moving test clip as
+webcam, focus zone set to the whole picture, volume 50 %):
+
+- From a fresh start, the phone was in focus after 0.81 s and heard after 0.86 s.
+- Live levels while in focus (3 s each, with the clip's phone about 70 % clear): drone -22.6,
+  pulse -22.8, wash -25.5, plucks -28.3, beat -26.4 dB RMS; the highest peak -7.6 dB.
+- Rendered offline (the files below), clear: drone -22.2, pulse -23.8, wash -24.3, plucks
+  -25.9, beat -26.9 dB RMS; at the edge of the zone 4 to 6.5 dB quieter (the beat 8.5 dB:
+  it is tinny there); the highest peak -5.9 dB.
+- Silent 2.6 s after switching to remove mode. A picture without a phone: silent for all 6 s.
+- These are measurements, not listening: the sounds have not been judged by ear.
+
+**To hear the characters without a camera:** `npm run check:hijack` (dev server running) writes
+`captures/hijack_drone.wav` and so on, 14 s each: tuning in from the edge of the zone and from
+the left (0–4 s), building up (4–8 s), moving (8–10 s), still (10–11 s), tuning out (from 11 s).
+
+Limits:
+
+- **Turning away for more than 1 s and back gives the person a new sound**: the tracker
+  forgets them, and the sound is tied to the tracker's id, not to how the person looks.
+- **Phones the detector misses make no sound**: far away, edge-on, held at the ear (see "Known
+  limitations").
+- **Left and right follow the screen.** With the laptop turned to face others and you behind
+  it, turn the mirror off (`X`) so that someone on your left is heard on the left.
+- Not yet tried live, with a real person and headphones. Not tried in streaming mode, where
+  the sound would play on the Mac, not on the iPad.
+
 ## How flicker is kept down
 
 - **Per-object decisions**: see above. An erased object stays erased through frames where its
@@ -530,7 +627,10 @@ src/
   detect/yoloSeg.ts  YOLO11-seg inference and mask decoding
   detect/tracker.ts  follows each phone-like object and decides whether it is erased
   mask/              temporal stabiliser, distance field, inpaint-window tracker
-  effects/           Effect interface; remove.ts erases the phone, grow.ts inflates it
+  effects/           Effect interface; remove.ts erases the phone, grow.ts inflates it,
+                     hijack.ts picks the phone in focus and drives the sound
+  audio/             hijack mode's sound: engine.ts (output chain, limiter, scheduling),
+                     voices.ts (the five characters)
   fill/              Fill interface; migan.ts, telea.ts, stylised.ts
   runtime/ort.ts     onnxruntime-web set-up (WebGPU, CPU fallback)
   ui/panel.ts        debug panel
@@ -547,6 +647,7 @@ stream.html          streaming mode: the iPad's page
 scripts/
   fetch_models.sh    downloads and exports the models (npm run models)
   headless_check.mjs a clip as fake webcam, timings for every mode (npm run check)
+  hijack_check.mjs   hijack mode's sound, measured; writes the characters as .wav (npm run check:hijack)
   make_test_clip.sh  turns a photo into a moving test clip for the check
   stills_report.mjs  what the detector makes of your captures (npm run stills)
   make_cert.sh       https certificate for npm run dev:ipad

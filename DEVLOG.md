@@ -905,3 +905,69 @@ files that were missing.
 
 Not verified: grow mode in streaming mode; the iPad's Screenshot and Record buttons after the
 merge (the stream files merged without conflicts, and grow mode does not touch them).
+
+## 2026-11-19 · hijack mode, first version (branch `hijack`)
+
+The third prototype: aim the camera at someone's phone and hear "their" soundscape in
+headphones. Talked through with the user before any code; their choices:
+
+- **Mac only** first (the laptop's webcam; they will test by turning the laptop towards people).
+- **A private listener**: the person who aims, on headphones.
+- **Silence between people**: nothing comes out of the headphones unless a phone is in focus.
+- **Completely separate** from remove and grow: its own mode (`H`); the picture is left as it is.
+- **Abstract, synthesised sound**, including a "muffled headphone beat". Recordings were
+  considered (a "literal" or "hybrid" version: what their phone might be playing) and set
+  aside because they need a library of sounds. Discussed before choosing: with a laptop webcam
+  the screen is rarely visible, orientation is confused with viewing angle, a phone at the ear
+  is where the detector already misses, thumb scrolling is lost in the mask's jitter, and
+  clothing colour shifts with the webcam's exposure. So only coarse inputs are used.
+
+### What was built
+
+- `src/audio/voices.ts`: five characters, all Web Audio synthesis (drone, pulse, noise wash,
+  bell plucks, muffled headphone beat). Shared by all: a filter that opens with clarity
+  (low-pass; for the beat a high-pass, tinny → full), panning, level from closeness, reverb
+  send, and a pitch glide when tuning in and out. Seeded variations per person (key, tempo,
+  pattern).
+- `src/audio/engine.ts`: one voice in focus at a time, a noise sweep when tuning in and out,
+  a generated room reverb, and at the end limiter → tanh soft clip → ceiling 0.8 (-1.9 dBFS).
+  Rhythmic events scheduled 0.3 s ahead on a 50 ms timer. A watchdog fades the sound out when
+  no update came for 3 s. Works on an OfflineAudioContext too, for the test renders.
+- `src/effects/hijack.ts`: measures each picked phone (distance from the centre in zone radii,
+  size, time held, speed in phone lengths per second), chooses the phone in focus with
+  hysteresis (lock after 0.25 s inside the zone; keep while inside 1.25× the zone and for 2 s
+  after it is lost; switch only to a phone a quarter radius more centred, for 0.6 s, not within
+  1.5 s of the last switch), and draws the zone and a ring.
+- Pipeline: an effect can now set its own watch time (hijack: 0.5 s, so the sound comes sooner)
+  and is told when it is switched out (`deactivate`, to stop the sound).
+- Screen recording in hijack mode includes the sound (a cloned track of the engine's output).
+- Panel: the hijack settings, and a "Test sound" button. Sound starts on the first click or
+  key press (browser rule); a note says so until then.
+- `scripts/hijack_check.mjs` (`npm run check:hijack`): measures the sound in headless Chrome,
+  and renders each character to `captures/hijack_<character>.wav` for listening.
+
+### Tuning the levels (measured, not heard)
+
+The first run had the drone about 7 dB louder than the pulse (live RMS -19.2 against -29.6),
+and the beat at the zone's edge 19 dB below its centred level (its high-pass started at
+1400 Hz). Changed: drone level 0.5 → 0.38; pulse bus 0.9 → 1.2; beat: kick 0.9 → 0.7, hats
+and snare up, high-pass at the edge 1400 → 500 Hz. After that (offline renders, clear part):
+drone -22.2, pulse -23.8, wash -24.3, plucks -25.9, beat -26.9 dB RMS; the beat's edge is
+8.5 dB below its clear level, the others 4 to 6.5 dB.
+
+### Checked
+
+- `npm run check:hijack -- captures/clip_moving.y4m`: in focus 0.81 s and heard 0.86 s after a
+  fresh start; each character heard; silent 2.6 s after switching to remove mode; a picture
+  without a phone silent for 6 s; highest peak -5.9 dB (ceiling -1.9); the recording is MP4
+  with H.264 and AAC; no console errors.
+- `npm run check`: remove and grow unchanged (MI-GAN 14.2 fps, Telea 30, stylised 29.9,
+  grow 30).
+- In the app's browser pane (a regular, not headless, browser) with still images: before a
+  click the "click or press any key for sound" note shows; after it the sound runs. On a stock
+  photo the phone is picked up (bell plucks, clear 100 %, near 100 %), with the ring around it.
+- Typecheck and production build pass.
+
+Not verified: how any of it sounds (nobody has listened yet); live with a real person, a moving
+laptop and headphones; how the focus behaves when sweeping across several people.
+

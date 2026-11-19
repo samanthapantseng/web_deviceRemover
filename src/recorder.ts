@@ -12,6 +12,15 @@
 
 /** In order of preference: MP4 (Safari, recent Chrome) plays everywhere, including Photos. */
 const TYPES = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+/** The same with sound: AAC in MP4 first (plays everywhere), then Opus. */
+const AV_TYPES = [
+  'video/mp4;codecs=avc1,mp4a.40.2',
+  'video/mp4;codecs=avc1,opus',
+  'video/mp4',
+  'video/webm;codecs=vp9,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm',
+];
 
 export class ScreenRecorder {
   /** The finished recording, kept until the next one starts (to save it again). */
@@ -43,17 +52,24 @@ export class ScreenRecorder {
 
   /**
    * Start recording at `width`×`height` (the size of the picture shown now). Stops by itself
-   * after `maxSeconds`, so a forgotten recording does not fill the iPad's memory.
+   * after `maxSeconds`, so a forgotten recording does not fill the iPad's memory. With `audio`
+   * (hijack mode's sound), the file has that sound too.
    */
-  start(width: number, height: number, name: string, maxSeconds: number): void {
+  start(width: number, height: number, name: string, maxSeconds: number, audio?: MediaStream | null): void {
     if (this.rec) return;
     this.last = null; // let the previous recording's memory go
     this.canvas.width = width;
     this.canvas.height = height;
     this.ctx.fillStyle = '#000';
     this.ctx.fillRect(0, 0, width, height);
-    const mimeType = TYPES.find((t) => MediaRecorder.isTypeSupported(t)) ?? '';
-    const rec = new MediaRecorder(this.canvas.captureStream(30), { mimeType, videoBitsPerSecond: 4_000_000 });
+    const stream = this.canvas.captureStream(30);
+    // A copy of the sound's track: stopping the recording stops its tracks, and the sound's own
+    // track must survive for the next recording.
+    const audioTracks = audio?.getAudioTracks().map((t) => t.clone()) ?? [];
+    audioTracks.forEach((t) => stream.addTrack(t));
+    const types = audioTracks.length ? AV_TYPES : TYPES;
+    const mimeType = types.find((t) => MediaRecorder.isTypeSupported(t)) ?? '';
+    const rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 4_000_000, audioBitsPerSecond: 160_000 });
     this.chunks = [];
     rec.ondataavailable = (e) => e.data.size && this.chunks.push(e.data);
     rec.onstop = () => {
