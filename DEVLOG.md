@@ -905,3 +905,127 @@ files that were missing.
 
 Not verified: grow mode in streaming mode; the iPad's Screenshot and Record buttons after the
 merge (the stream files merged without conflicts, and grow mode does not touch them).
+
+## 2026-11-19 · hijack mode, first version (branch `hijack`)
+
+The third prototype: aim the camera at someone's phone and hear "their" soundscape in
+headphones. Talked through with the user before any code; their choices:
+
+- **Mac only** first (the laptop's webcam; they will test by turning the laptop towards people).
+- **A private listener**: the person who aims, on headphones.
+- **Silence between people**: nothing comes out of the headphones unless a phone is in focus.
+- **Completely separate** from remove and grow: its own mode (`H`); the picture is left as it is.
+- **Abstract, synthesised sound**, including a "muffled headphone beat". Recordings were
+  considered (a "literal" or "hybrid" version: what their phone might be playing) and set
+  aside because they need a library of sounds. Discussed before choosing: with a laptop webcam
+  the screen is rarely visible, orientation is confused with viewing angle, a phone at the ear
+  is where the detector already misses, thumb scrolling is lost in the mask's jitter, and
+  clothing colour shifts with the webcam's exposure. So only coarse inputs are used.
+
+### What was built
+
+- `src/audio/voices.ts`: five characters, all Web Audio synthesis (drone, pulse, noise wash,
+  bell plucks, muffled headphone beat). Shared by all: a filter that opens with clarity
+  (low-pass; for the beat a high-pass, tinny → full), panning, level from closeness, reverb
+  send, and a pitch glide when tuning in and out. Seeded variations per person (key, tempo,
+  pattern).
+- `src/audio/engine.ts`: one voice in focus at a time, a noise sweep when tuning in and out,
+  a generated room reverb, and at the end limiter → tanh soft clip → ceiling 0.8 (-1.9 dBFS).
+  Rhythmic events scheduled 0.3 s ahead on a 50 ms timer. A watchdog fades the sound out when
+  no update came for 3 s. Works on an OfflineAudioContext too, for the test renders.
+- `src/effects/hijack.ts`: measures each picked phone (distance from the centre in zone radii,
+  size, time held, speed in phone lengths per second), chooses the phone in focus with
+  hysteresis (lock after 0.25 s inside the zone; keep while inside 1.25× the zone and for 2 s
+  after it is lost; switch only to a phone a quarter radius more centred, for 0.6 s, not within
+  1.5 s of the last switch), and draws the zone and a ring.
+- Pipeline: an effect can now set its own watch time (hijack: 0.5 s, so the sound comes sooner)
+  and is told when it is switched out (`deactivate`, to stop the sound).
+- Screen recording in hijack mode includes the sound (a cloned track of the engine's output).
+- Panel: the hijack settings, and a "Test sound" button. Sound starts on the first click or
+  key press (browser rule); a note says so until then.
+- `scripts/hijack_check.mjs` (`npm run check:hijack`): measures the sound in headless Chrome,
+  and renders each character to `captures/hijack_<character>.wav` for listening.
+
+### Tuning the levels (measured, not heard)
+
+The first run had the drone about 7 dB louder than the pulse (live RMS -19.2 against -29.6),
+and the beat at the zone's edge 19 dB below its centred level (its high-pass started at
+1400 Hz). Changed: drone level 0.5 → 0.38; pulse bus 0.9 → 1.2; beat: kick 0.9 → 0.7, hats
+and snare up, high-pass at the edge 1400 → 500 Hz. After that (offline renders, clear part):
+drone -22.2, pulse -23.8, wash -24.3, plucks -25.9, beat -26.9 dB RMS; the beat's edge is
+8.5 dB below its clear level, the others 4 to 6.5 dB.
+
+### Checked
+
+- `npm run check:hijack -- captures/clip_moving.y4m`: in focus 0.81 s and heard 0.86 s after a
+  fresh start; each character heard; silent 2.6 s after switching to remove mode; a picture
+  without a phone silent for 6 s; highest peak -5.9 dB (ceiling -1.9); the recording is MP4
+  with H.264 and AAC; no console errors.
+- `npm run check`: remove and grow unchanged (MI-GAN 14.2 fps, Telea 30, stylised 29.9,
+  grow 30).
+- In the app's browser pane (a regular, not headless, browser) with still images: before a
+  click the "click or press any key for sound" note shows; after it the sound runs. On a stock
+  photo the phone is picked up (bell plucks, clear 100 %, near 100 %), with the ring around it.
+- Typecheck and production build pass.
+
+Not verified: how any of it sounds (nobody has listened yet); live with a real person, a moving
+laptop and headphones; how the focus behaves when sweeping across several people.
+
+## 2026-11-19 · hijack mode: from "tuning a radio" to breaking into someone's bubble
+
+After trying the first version the user said the sounds felt random: it did not feel like
+"hijacking someone's private coping mechanism". Talked through why (the characters are kinds of
+sound, not things people do with headphones; you hear them from outside, placed in the room;
+who gets what is dealt at random), and three directions: characters as coping strategies
+(shutting out, company, the same song again, scrolling), visible mappings (a moving phone →
+scrolling, time held → deeper in), and the transitions in and out. The user chose to build the
+transitions first: they change all five characters at once without new sound design.
+
+### What changed (`src/audio/voices.ts`, `src/audio/engine.ts`, `src/effects/hijack.ts`)
+
+- **Already playing.** Each person has a clock of their own, started a random 0–2 min (fixed
+  per person) before the camera saw them. A voice starts that far into its timeline: the
+  pulse and the beat land mid-bar on their 16th-note grid, slow swells (drone, wash) are joined
+  midway (LFOs started at the right phase with a PeriodicWave), and the bells start with one
+  note already ringing. Coming back to the same person (while the tracker still follows them),
+  the sound has moved on.
+- **Edge = leak, centre = inside their head.** Replaces the per-character muffling (a low-pass
+  that opened; for the beat a high-pass). All characters now share one chain whose settings
+  move with clarity: at the edge an overdriven, slightly lopsided small speaker (tanh with
+  drive 14 and an offset), a bump at 2.5 kHz, only 650 Hz–9 kHz, quieter, panned to the phone,
+  more reverb; inside: clean, full range, +5 dB low shelf, dry, and panned to the centre.
+- **Breaking in** replaces the radio-noise sweep and the pitch glide: 0.8 s of dropouts (the
+  signal gated on and off in 20–90 ms pieces, holding longer towards the end) and a 4-bit
+  staircase (bit-crushed) sound, over a brown-noise rumble (the carriage). Then the seal: the
+  rumble is cut, a soft 70→40 Hz knock, a short high hiss, and the filters open.
+- **Pushed out** replaces the fade: the sound is muffled to 350 Hz and dropped about 10 dB at
+  once, keeps playing behind that while it fades, and the rumble comes back for about 0.5 s.
+
+### Tuning (measured, not heard)
+
+- First measurement: the drone and the beat were nearly gone at the edge (-45 dB RMS, 29 and
+  23 dB below inside) because they are mostly bass, and the leak removed the hi-hats too (its
+  low-pass was at 4.2 kHz). The rumble was as loud as the voices (-21 dB) and covered the
+  dropouts. A first overdrive (drive 8, symmetric) did not help: the drone's overtones stay
+  under 650 Hz.
+- Changed: leak low-pass 4.2 → 9 kHz; drive 8 → 14 with an offset (even overtones); rumble
+  about 6 dB down; and a per-character correction of the leak (`leakLiftDb`: drone +16, beat
+  +8, pulse +1, wash 0, bells -9) so that every leak sits 7–14 dB below its inside level (the
+  bells had been louder at the edge than inside). The drone was then about 4 dB above the
+  others inside (the extra bass favours it): its level 0.3 → 0.22.
+- Result: see README, "Hijack mode", "Measured".
+
+### Checked
+
+- `npm run check:hijack`: no console errors; the offline renders show the leak on the phone's
+  side (about 8 dB) and centred inside (within 0.5 dB), the rumble cut at the seal, the door
+  drop, silence afterwards, peaks at or below -6.7 dB. Live: heard 0.88 s after a fresh start,
+  silent 2.8 s after leaving the mode, a picture without a phone stays silent, recording has
+  sound.
+- In the app's browser pane (regular Chrome): on a stock photo the phone locks on (the beat,
+  fully centred) with no console errors.
+- Typecheck passes.
+
+Not verified: how any of it sounds; the dropouts are not measured (the rumble under them hides
+them from a level measurement); live with a person and headphones.
+

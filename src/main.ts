@@ -2,12 +2,15 @@ import './style.css';
 import { openCamera, openStill, type CameraFacing, type FrameSource } from './camera';
 import { YoloSegDetector } from './detect/yoloSeg';
 import { report, reporting, startReporting, wasmMemoryMB } from './devReport';
+import { LiveSound } from './audio/engine';
+import { CHARACTER_LABELS } from './audio/voices';
 import { GrowEffect } from './effects/grow';
+import { HijackEffect } from './effects/hijack';
 import { RemoveEffect } from './effects/remove';
 import { FillSet } from './fill';
 import { Pipeline } from './pipeline';
 import { ScreenRecorder } from './recorder';
-import { FILL_ORDER, MODE_ORDER, SettingsStore, STYLE_ORDER, type ModeId } from './settings';
+import { CHARACTERS, FILL_ORDER, MODE_ORDER, SettingsStore, STYLE_ORDER, type ModeId } from './settings';
 import { downloadBlob, downloadPng, mirrored, sideBySide, timestamp, toPngBlob } from './snapshot';
 import { openRemote, type RemoteSource } from './stream/remoteSource';
 import { DebugPanel, isTouchDevice } from './ui/panel';
@@ -16,6 +19,11 @@ startReporting();
 
 const store = new SettingsStore();
 const settings = store.value;
+// Hijack mode's sound. Browsers allow sound only after a click or key press on the page.
+const sound = new LiveSound();
+const unlockSound = () => settings.mode === 'hijack' && sound.ensure();
+window.addEventListener('keydown', unlockSound);
+window.addEventListener('pointerdown', unlockSound);
 
 const view = document.querySelector<HTMLCanvasElement>('#view')!;
 const status = document.querySelector<HTMLDivElement>('#status')!;
@@ -80,7 +88,7 @@ async function main(): Promise<void> {
   // ?camera=front|back   which camera, without changing the saved setting
   // ?runFor=<seconds>    stop processing after that long (for memory and timing tests)
   // ?fill=migan|telea|stylised   start with that fill, without changing the saved setting
-  // ?mode=remove|grow            start in that mode, without changing the saved setting
+  // ?mode=remove|grow|hijack     start in that mode, without changing the saved setting
   const params = new URLSearchParams(location.search);
   const modeParam = params.get('mode') as ModeId | null;
   if (modeParam && MODE_ORDER.includes(modeParam)) settings.mode = modeParam;
@@ -126,7 +134,8 @@ async function main(): Promise<void> {
   const fills = new FillSet();
   const remove = new RemoveEffect(source.width, source.height, fills);
   const grow = new GrowEffect(source.width, source.height);
-  const effectFor = (mode: ModeId) => (mode === 'grow' ? grow : remove);
+  const hijack = new HijackEffect(source.width, source.height, sound);
+  const effectFor = (mode: ModeId) => (mode === 'grow' ? grow : mode === 'hijack' ? hijack : remove);
   const pipeline = new Pipeline(source, detector, effectFor(settings.mode), settings);
   pipeline.debugRect = () => (pipeline.activeEffect === remove ? remove.rect : null);
   store.onChange((_s, key) => {
@@ -139,6 +148,13 @@ async function main(): Promise<void> {
   let lastStats = 0;
   const recorder = new ScreenRecorder();
   let lastRecorded = 0;
+  // Hijack mode without sound yet: say how to get it.
+  const soundHint = document.createElement('div');
+  soundHint.id = 'sound';
+  soundHint.className = 'hidden';
+  soundHint.textContent = 'click or press any key for sound';
+  document.body.append(soundHint);
+  let soundHintShown = false;
   const stats = () => {
     const st = pipeline.stats;
     return {
@@ -163,6 +179,8 @@ async function main(): Promise<void> {
     if (lastFrame && now > lastFrame) displayFps += 0.1 * (1000 / (now - lastFrame) - displayFps);
     lastFrame = now;
     pipeline.render(ctx);
+    const wantHint = settings.mode === 'hijack' && !sound.running;
+    if (wantHint !== soundHintShown) soundHint.classList.toggle('hidden', !(soundHintShown = wantHint));
     // Screen recording, at most 30 frames a second: the picture as on screen, but without the
     // mask overlay (drawn again without it only while the overlay is on).
     if (recorder.recording && now - lastRecorded >= 1000 / 30 - 4) {
@@ -201,7 +219,9 @@ async function main(): Promise<void> {
     if (recorder.recording) return recorder.stop();
     if (!ScreenRecorder.supported) return note('this browser cannot record the screen');
     try {
-      recorder.start(view.width, view.height, `device-remover_${timestamp()}`, recordMax);
+      // In hijack mode the recording has the sound too.
+      const audio = settings.mode === 'hijack' ? sound.stream() : null;
+      recorder.start(view.width, view.height, `device-remover_${timestamp()}`, recordMax, audio);
       lastRecorded = 0;
       report('status', { text: `recording started, ${view.width}×${view.height}` });
     } catch (err) {
@@ -220,6 +240,7 @@ async function main(): Promise<void> {
   setInterval(() => recorder.recording && updateRecordUi(), 500);
 
   // 3. Keys and touch work from the start, also while models are still loading.
+  let beforeHijack: ModeId = settings.mode === 'hijack' ? 'remove' : settings.mode;
   window.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     // Typing a letter in a focused <select> picks an option; leave those keys alone.
@@ -238,6 +259,15 @@ async function main(): Promise<void> {
         break;
       case 'g':
         store.set('mode', settings.mode === 'grow' ? 'remove' : 'grow');
+        break;
+      case 'h':
+        // Hijack on; pressed again, back to the mode before.
+        if (settings.mode === 'hijack') store.set('mode', beforeHijack);
+        else {
+          beforeHijack = settings.mode;
+          store.set('mode', 'hijack');
+          sound.ensure();
+        }
         break;
       case 'm':
         store.set('showMask', !settings.showMask);
@@ -280,6 +310,16 @@ async function main(): Promise<void> {
   const saveRecordingButton = panel.addAction('Save last recording', () => recorder.last && downloadBlob(recorder.last, recorder.last.name));
   saveRecordingButton.classList.add('gone');
   panel.addAction('Fullscreen', toggleFullscreen);
+  // Hijack mode: hear a character for 5 s without a phone (the one chosen, or each in turn).
+  let testIndex = 0;
+  panel.addAction('Test sound', () => {
+    sound.ensure();
+    const character = settings.hijackSound === 'auto' ? CHARACTERS[testIndex++ % CHARACTERS.length] : settings.hijackSound;
+    if (!sound.engine) return note('no sound: this browser has no Web Audio');
+    sound.setVolume(settings.hijackVolume);
+    sound.engine.preview(character, Math.floor(Math.random() * 2 ** 31));
+    note(`test sound: ${CHARACTER_LABELS[character]}`);
+  });
   panel.addAction('Close', () => panel.toggle());
 
   // 4. Detector, then the fills in the background (the stylised one is ready instantly).
@@ -333,6 +373,8 @@ async function main(): Promise<void> {
       },
       remove,
       grow,
+      hijack,
+      sound,
       detector,
       store,
       displayFps: () => displayFps,

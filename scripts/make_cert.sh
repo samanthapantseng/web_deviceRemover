@@ -56,6 +56,13 @@ while read -r ip; do
   san="$san,IP:$ip"
   addresses="$addresses $ip"
 done < <(ifconfig | awk '/inet / {print $2}' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)' || true)
+# The fixed address of the Ethernet cable to the iPad (README), always included: then it does
+# not matter whether the cable is plugged in when the server starts.
+WIRED_IP="${DEVICE_REMOVER_WIRED_IP:-192.168.77.1}"
+case ",$san," in
+  *",IP:$WIRED_IP,"*) ;;
+  *) san="$san,IP:$WIRED_IP" ;;
+esac
 
 cat >"$tmp/server.ext" <<EOF
 basicConstraints = critical, CA:FALSE

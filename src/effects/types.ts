@@ -62,4 +62,8 @@ export interface Effect {
   render(ctx: CanvasRenderingContext2D, still?: boolean): void;
   /** Forget everything: called when the effect is switched in, so nothing stale is shown. */
   reset(): void;
+  /** Called when another effect is switched in (e.g. to stop a sound). */
+  deactivate?(): void;
+  /** How long the tracker watches a new phone before deciding, if not `settings.watchMs`. */
+  watchMs?(s: Settings): number;
 }

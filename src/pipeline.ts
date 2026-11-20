@@ -92,6 +92,7 @@ export class Pipeline {
   /** Switch effect (mode). The new one starts from nothing; the next processed frame feeds it. */
   setEffect(effect: Effect): void {
     if (effect === this.effect) return;
+    this.effect.deactivate?.();
     effect.reset();
     this.effect = effect;
   }
@@ -127,6 +128,7 @@ export class Pipeline {
     frame.ctx.drawImage(this.source.element, 0, 0, width, height);
     // Held for the whole frame, in case the mode is switched while this frame is being worked on.
     const effect = this.effect;
+    const watchMs = effect.watchMs?.(s) ?? s.watchMs;
 
     // Every object that looks even slightly like a phone (half the threshold) goes to the
     // tracker; only the ones it has decided on are erased.
@@ -138,7 +140,7 @@ export class Pipeline {
       soft: !!effect.needsPhoneAlpha,
       person: !!effect.needsPersonAlpha?.(s),
       choose: (seen) => {
-        verdicts = this.tracker.update(seen, performance.now(), { conf: s.confidence, watchMs: s.watchMs, share: s.watchShare });
+        verdicts = this.tracker.update(seen, performance.now(), { conf: s.confidence, watchMs, share: s.watchShare });
         return verdicts.map((v) => v.erase);
       },
     });
@@ -192,7 +194,7 @@ export class Pipeline {
     st.effectMs = mask.present ? smooth(st.effectMs, effectMs) : 0;
     st.phones = det.boxes.length;
     st.bestScore = det.boxes.reduce((m, b) => Math.max(m, b.score), 0);
-    st.objects = this.tracker.summary(now, s.watchMs);
+    st.objects = this.tracker.summary(now, watchMs);
     const r = det.rejected[0];
     st.rejected = r ? `${r.top.name} ${r.top.score.toFixed(2)} (phone ${r.score.toFixed(2)})` : '';
     st.held = mask.held;
@@ -258,7 +260,7 @@ export class Pipeline {
     // Erased objects in yellow; objects being watched in orange, dashed; decided against in grey.
     ctx.lineWidth = 1.5;
     ctx.font = '11px ui-monospace, Menlo, monospace';
-    const watchMs = this.settings.watchMs;
+    const watchMs = this.effect.watchMs?.(this.settings) ?? this.settings.watchMs;
     for (const { box: b, verdict: v } of this.seen) {
       if (!v) continue;
       const pct = `${Math.round(v.share * 100)}%`;

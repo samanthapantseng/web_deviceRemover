@@ -171,6 +171,21 @@ textarea {
   color: #ff8a80;
 }
 
+/* Hijack mode before the first click: how to get sound. */
+#sound {
+  position: fixed;
+  left: 50%;
+  bottom: 52px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 4px;
+  color: #fff;
+  white-space: nowrap;
+  transition: opacity 0.6s;
+  pointer-events: none;
+}
+
 /* While recording: small and quiet, bottom left. */
 #rec {
   position: fixed;

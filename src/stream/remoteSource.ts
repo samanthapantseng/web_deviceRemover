@@ -30,8 +30,42 @@ export interface RemoteSource extends FrameSource {
 
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
 
+/**
+ * Chrome offers a page all of this Mac's network addresses for WebRTC only if the page may use
+ * the camera. Otherwise it offers just the address of its default route, usually Wi-Fi. Over
+ * the Ethernet cable to the iPad, that address can't be reached and the connection fails
+ * (2026-11-20). So this page asks for the camera once: the first time, Chrome asks in this
+ * window (Allow; the stream window's own Chrome profile remembers it), and the camera is put
+ * away at once. After that the permission alone is enough and the camera is never opened.
+ */
+async function allowAllAddresses(say: Say): Promise<void> {
+  let state: PermissionState | 'unknown' = 'unknown';
+  try {
+    state = (await navigator.permissions.query({ name: 'camera' as PermissionName })).state;
+  } catch {
+    /* no Permissions API for the camera: just ask */
+  }
+  if (state === 'granted') return;
+  const fallback = 'only the Wi-Fi can reach the iPad, not the Ethernet cable';
+  if (state === 'denied') {
+    report('status', { text: `camera permission blocked for this page: ${fallback}`, isError: true });
+    return;
+  }
+  say('Chrome asks for the camera at the top of this window: click Allow, once. The cable connection to the iPad needs it; the camera itself is not used.');
+  // Put the camera away whenever the answer comes, even after the wait below has given up.
+  const asked = navigator.mediaDevices.getUserMedia({ video: true }).then((s) => s.getTracks().forEach((t) => t.stop()));
+  try {
+    await Promise.race([asked, new Promise((_, reject) => setTimeout(() => reject(new Error('no answer within 60 s')), 60_000))]);
+    report('status', { text: 'camera permission granted: the Ethernet cable can be used' });
+  } catch (err) {
+    report('status', { text: `no camera permission (${(err as Error).message}): ${fallback}`, isError: true });
+  }
+  say('waiting for the iPad…');
+}
+
 /** Resolves once the first frame from the iPad has arrived (its size sets the pipeline's). */
-export function openRemote(say: Say): Promise<RemoteSource> {
+export async function openRemote(say: Say): Promise<RemoteSource> {
+  await allowAllAddresses(say);
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
