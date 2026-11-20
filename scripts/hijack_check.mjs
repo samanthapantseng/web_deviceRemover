@@ -8,9 +8,9 @@
 //    a click, how long until the phone is heard; each character's level and peak; silence again
 //    after switching to remove mode; a screen recording in hijack mode has a sound track.
 // 2. Live, with a picture without a phone: silence the whole time.
-// 3. Each character rendered offline into captures/hijack_<character>.wav (14 s: tuning in from
-//    the edge of the zone, building up, moving, still again, tuning out), with its levels. These
-//    files are for listening.
+// 3. Each character rendered offline into captures/hijack_<character>.wav (15 s: breaking in at
+//    the edge of the zone, the leak, moving into the centre, building up inside, moving, still,
+//    pushed out), with measurements of each stage. These files are for listening.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,6 +53,8 @@ async function open(query) {
   return page;
 }
 
+/** dB of what is left when the low band is taken out of the total. */
+const above = (total, low) => 10 * Math.log10(Math.max(1e-30, 10 ** (total / 10) - 10 ** (low / 10)));
 const fmt = (db) => (Number.isFinite(db) ? +db.toFixed(1) : 'silent');
 
 try {
@@ -145,26 +147,27 @@ try {
   // ---- 3. Offline renders, for listening ----
   const renders = await blank.evaluate(async () => {
     const { SoundEngine, CEILING } = await import('/src/audio/engine.ts');
-    const SECONDS = 14;
+    const SECONDS = 15;
     const SR = 44100;
     const lerp = (a, b, x) => a + (b - a) * Math.min(1, Math.max(0, x));
     const out = [];
     for (const c of ['drone', 'pulse', 'wash', 'plucks', 'beat']) {
       const ctx = new OfflineAudioContext(2, SECONDS * SR, SR);
       const e = new SoundEngine(ctx, 0.5);
-      // 0–4 s tuning in from the edge of the zone and from the left; 4–8 s building up;
-      // 8–10 s moving; 10–11 s still; from 11 s tuning out.
+      // 0–3 s at the edge of the zone, on the left (0–0.8 s breaking in, then the leak);
+      // 3–5 s moving into the centre; 5–9 s inside, building up; 9–11 s moving; 11–12 s still;
+      // at 12 s pushed out.
       const params = (t) => ({
-        pan: lerp(-0.6, 0, t / 4),
-        clarity: lerp(0.15, 1, t / 4),
+        pan: lerp(-0.6, 0, (t - 3) / 2),
+        clarity: lerp(0.1, 1, (t - 3) / 2),
         closeness: 0.6,
-        build: lerp(0, 1, (t - 4) / 4),
-        activity: t >= 8 && t < 10 ? 0.9 : 0,
+        build: lerp(0, 1, (t - 5) / 4),
+        activity: t >= 9 && t < 11 ? 0.9 : 0,
       });
-      e.focus('render', c, 12345, params(0), 0);
+      e.focus('render', c, 12345, params(0), 37.3, 0); // joined 37.3 s into their sound
       for (let t = 0.05; t < SECONDS; t += 0.05) {
-        if (t < 11) e.update(params(t), t);
-        else if (t - 0.05 < 11) e.release(11);
+        if (t < 12) e.update(params(t), t);
+        else if (t - 0.05 < 12) e.release(12);
         e.scheduleUntil(t + 0.3);
       }
       const buf = await ctx.startRendering();
@@ -179,6 +182,33 @@ try {
         }
         const n = Math.floor(to * SR) - Math.floor(from * SR);
         return { rms: 10 * Math.log10(s / n || 1e-30), peak: 20 * Math.log10(p || 1e-15) };
+      };
+      // Left minus right, dB (positive: heard on the left).
+      const balance = (from, to) => {
+        let l = 0;
+        let r = 0;
+        for (let i = Math.floor(from * SR); i < Math.floor(to * SR); i++) {
+          l += L[i] * L[i];
+          r += R[i] * R[i];
+        }
+        return 10 * Math.log10((l || 1e-30) / (r || 1e-30));
+      };
+      // Energy below about 200 Hz, dB RMS (two one-pole low-passes).
+      const a = Math.exp((-2 * Math.PI * 200) / SR);
+      const low = new Float32Array(L.length);
+      let y1 = 0;
+      let y2 = 0;
+      for (let i = 0; i < L.length; i++) {
+        y1 = (1 - a) * ((L[i] + R[i]) / 2) + a * y1;
+        y2 = (1 - a) * y1 + a * y2;
+        low[i] = y2;
+      }
+      const lowRms = (from, to) => {
+        let s = 0;
+        const i0 = Math.floor(from * SR);
+        const i1 = Math.floor(to * SR);
+        for (let i = i0; i < i1; i++) s += low[i] * low[i];
+        return 10 * Math.log10(s / (i1 - i0) || 1e-30);
       };
       // 16-bit stereo WAV.
       const n = L.length;
@@ -205,10 +235,17 @@ try {
       for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
       out.push({
         character: c,
-        edge: stat(0.5, 1.5),
-        clear: stat(3, 8),
+        rumbleIn: lowRms(0.3, 0.78),
+        rumbleSealed: lowRms(0.9, 1.6),
+        edge: { ...stat(1.2, 2.9), balance: balance(1.2, 2.9), low: lowRms(1.2, 2.9) },
+        inside: { ...stat(5.5, 9), balance: balance(5.5, 9), low: lowRms(5.5, 9) },
+        // Above ~200 Hz, so the rumble coming back does not count.
+        beforeDoor: stat(11.5, 12).rms,
+        beforeDoorLow: lowRms(11.5, 12),
+        behindDoor: stat(12.1, 12.3).rms,
+        behindDoorLow: lowRms(12.1, 12.3),
         all: stat(0, SECONDS),
-        end: stat(13.5, 14),
+        end: stat(14.5, 15),
         ceiling: 20 * Math.log10(CEILING),
         wav: btoa(bin),
       });
@@ -225,17 +262,24 @@ try {
   console.log(`switched to remove mode: silent after ${live.silentAt === null ? 'NOT within 8 s' : `${Math.round(live.silentAt)} ms`}; back in hijack: running ${live.after.running}, hint shown ${live.after.hint}`);
   console.log(`screen recording in hijack mode: ${recording}`);
   console.log(`picture without a phone, 6 s: loudest peak ${fmt(empty.loudest)} dB · ${empty.mode}`);
-  console.log('offline renders (14 s each), dB:');
+  console.log('offline renders (15 s each), dB. Bass: energy below ~200 Hz; L−R: positive = heard on the left (the phone is on the left at the edge):');
   console.table(
     renders.map((r) => ({
       character: r.character,
-      'edge of zone rms': fmt(r.edge.rms),
-      'clear rms': fmt(r.clear.rms),
+      'rumble breaking in': fmt(r.rumbleIn),
+      'bass sealed (leak)': fmt(r.rumbleSealed),
+      'edge rms': fmt(r.edge.rms),
+      'edge bass': fmt(r.edge.low),
+      'edge L−R': fmt(r.edge.balance),
+      'inside rms': fmt(r.inside.rms),
+      'inside bass': fmt(r.inside.low),
+      'inside L−R': fmt(r.inside.balance),
+      'door drop (>200 Hz)': fmt(above(r.behindDoor, r.behindDoorLow) - above(r.beforeDoor, r.beforeDoorLow)),
       'peak (all)': fmt(r.all.peak),
-      ceiling: fmt(r.ceiling),
       'last 0.5 s peak': fmt(r.end.peak),
     })),
   );
+  console.log(`ceiling ${fmt(renders[0].ceiling)} dB`);
   console.log(problems.length ? `problems:\n  ${problems.join('\n  ')}` : 'no console errors');
   console.log(`wrote ${renders.map((r) => `captures/hijack_${r.character}.wav`).join(', ')}`);
   process.exitCode = problems.length ? 1 : 0;

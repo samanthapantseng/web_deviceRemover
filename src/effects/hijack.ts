@@ -15,9 +15,11 @@
 //      centred (SWITCH_MARGIN), for SWITCH_MS, and not within MIN_FOCUS_MS of the last switch.
 // 3. Tells the sound engine. Outside the zone, or with no phone: silence.
 //
-// Each person (tracker id) keeps the character and variations they were first given. The
-// tracker forgets someone who is out of sight for more than 1 s, so turning away and back gives
-// that person a new sound.
+// Each person (tracker id) keeps the character and variations they were first given, and has a
+// clock of their own: their sound has been playing since before the camera saw them (a random
+// 0–2 min, fixed per person), so it is joined mid-phrase, and when you come back to them it has
+// moved on. The tracker forgets someone who is out of sight for more than 1 s, so turning away
+// and back gives that person a new sound.
 import type { LiveSound } from '../audio/engine';
 import { clamp01, type VoiceParams } from '../audio/voices';
 import { CHARACTERS, type CharacterId, type Settings } from '../settings';
@@ -39,6 +41,8 @@ const RING_FADE_MS = 400;
 interface Person {
   character: CharacterId;
   seed: number;
+  /** performance.now() at which their sound "started" (before the camera saw them). */
+  zero: number;
 }
 
 interface Measured {
@@ -136,25 +140,25 @@ export class HijackEffect implements Effect {
     if (next) {
       this.challenger = null;
       this.lastSwitch = now;
-      const person = this.personFor(next.phone.id);
+      const person = this.personFor(next.phone, s, now);
       const character = this.effectiveCharacter(person);
       const params = this.paramsFor(next, s);
       const key = `${next.phone.id}:${character}`;
       this.focus = { id: next.phone.id, since: now, lastSeen: now, key, params };
-      e?.focus(key, character, person.seed, params);
+      e?.focus(key, character, person.seed, params, (now - person.zero) / 1000);
     } else if (!keep) {
       if (this.focus) e?.release();
       this.focus = null;
     } else if (this.focus) {
       // In focus: new numbers if it was seen this frame; the last ones again while it is lost.
       if (cur) this.focus.params = this.paramsFor(cur, s);
-      const person = this.personFor(this.focus.id);
+      const person = this.people.get(this.focus.id) ?? this.personFor(cur?.phone ?? null, s, now, this.focus.id);
       const character = this.effectiveCharacter(person);
       const key = `${this.focus.id}:${character}`;
       // The sound setting was changed in the panel: hear the new character at once.
       if (key !== this.focus.key || (e && e.focusKey !== key)) {
         this.focus.key = key;
-        e?.focus(key, character, person.seed, this.focus.params);
+        e?.focus(key, character, person.seed, this.focus.params, (now - person.zero) / 1000);
       } else e?.update(this.focus.params);
     }
 
@@ -244,10 +248,15 @@ export class HijackEffect implements Effect {
     m.t = now;
   }
 
-  private personFor(id: number): Person {
+  /** The person holding this phone: their character, variations and clock, given the first time. */
+  private personFor(phone: PickedPhone | null, s: Settings, now: number, id = phone?.id ?? 0): Person {
     let p = this.people.get(id);
     if (!p) {
-      p = { character: this.drawCharacter(), seed: (Math.imul(id, 2654435761) ^ this.salt) >>> 0 };
+      const seed = (Math.imul(id, 2654435761) ^ this.salt) >>> 0;
+      // Their sound was already playing: since the phone came into view (watch time + time
+      // since the tracker decided), plus 0–2 min before that.
+      const before = (seed % 120_000) + (phone ? phone.erasedMs : 0) + s.hijackWatchMs;
+      p = { character: this.drawCharacter(), seed, zero: now - before };
       this.people.set(id, p);
       // Ids only grow; keep the map from growing for ever in a long run.
       if (this.people.size > 200) this.people.delete(this.people.keys().next().value!);

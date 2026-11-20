@@ -6,9 +6,9 @@ A third, **hijack**, leaves the picture alone: aim the camera at someone's phone
 "their" soundscape in headphones, made up from what the camera sees (see "Hijack mode").
 
 It runs in the browser, in one of two ways (see "Two ways to run it"): on the Mac alone with
-its webcam, or with an iPad as camera and screen while the Mac does the work. Either way no
-frame leaves the local network, and nothing is saved unless you take a snapshot (`S`) or a
-screen recording (`V`).
+its webcam, or with an iPad as camera and screen while the Mac does the work (connected over
+Wi-Fi or by an Ethernet cable). Either way no frame leaves the local network, and nothing is
+saved unless you take a snapshot (`S`) or a screen recording (`V`).
 
 ```
 camera → YOLO11-seg (phone-like objects) → tracker (watch 1.5 s, then decide) → mask stabiliser
@@ -37,14 +37,19 @@ npm run models
 All commands are typed in Terminal on the Mac, in the project folder
 (`cd` into it first). Ctrl-C in a Terminal window stops what runs there.
 
-| | Mac only | iPad streaming |
-|---|---|---|
-| camera | the Mac's webcam | the iPad's camera |
-| picture shown on | the Mac's screen | the iPad's screen |
-| models run on | the Mac | the Mac |
-| Terminal windows | one | two |
-| open on the Mac | <http://localhost:5173/> in Chrome | opens by itself |
-| open on the iPad | – | `https://<Mac's address>:8443/stream.html` in Safari |
+| | Mac only | iPad streaming, over Wi-Fi | iPad streaming, over an Ethernet cable |
+|---|---|---|---|
+| camera | the Mac's webcam | the iPad's camera | the iPad's camera |
+| picture shown on | the Mac's screen | the iPad's screen | the iPad's screen |
+| models run on | the Mac | the Mac | the Mac |
+| iPad and Mac connected by | – | the same Wi-Fi | one Ethernet cable, an adapter on each side |
+| Terminal windows | one | two | two |
+| open on the Mac | <http://localhost:5173/> in Chrome | opens by itself | opens by itself |
+| open on the iPad | – | `https://<Mac's address>:8443/stream.html` (it changes with the network) | `https://192.168.77.1:8443/stream.html` (always the same) |
+| once, before the first time | – | certificate on iPad and Mac | the same, plus fixed addresses (see "Streaming over an Ethernet cable") |
+
+Both streaming columns are the same streaming mode with the same commands; only the
+connection between the two devices differs.
 
 ### Mac only (the laptop's webcam)
 
@@ -61,9 +66,12 @@ All commands are typed in Terminal on the Mac, in the project folder
 ### iPad streaming (the iPad's camera and screen, the Mac does the work)
 
 The iPad only films and shows; the Mac runs the models and sends the finished picture back.
+The two are connected either over Wi-Fi or by an Ethernet cable; the steps are the same, only
+the address the iPad opens differs (step 3).
+
 Before the first time, the iPad and the Mac each have to trust the project's certificate once:
 the iPad as in "Testing on the iPad" (steps 1 to 3), the Mac as in "Streaming mode" (Keychain
-Access).
+Access). For the cable, also set the fixed addresses once ("Streaming over an Ethernet cable").
 
 1. **Terminal window 1, the server.** Start it and leave the window open:
 
@@ -71,8 +79,9 @@ Access).
    npm run dev:ipad
    ```
 
-   Wait until it says `ready`. Note the address after `Network:`, for example
-   `https://10.21.12.136:8443/`: that is the Mac's address on this Wi-Fi.
+   Wait until it says `ready`. The lines after `Network:` are the Mac's addresses, for example
+   `https://10.21.12.136:8443/` on Wi-Fi. With the cable plugged in, one of them is
+   `https://192.168.77.1:8443/`.
 
 2. **Terminal window 2, the Mac's processing window.** Open a second Terminal window (⌘N),
    `cd` into the project folder again, and run:
@@ -83,17 +92,25 @@ Access).
 
    A Chrome window opens and says "waiting for the iPad…". (A privacy warning there means the
    Mac does not trust the certificate yet: **Advanced → Proceed to localhost** works for now.)
-   Leave this window open and visible; the mode and the fill are changed here (`G` remove /
-   grow, `1` `2` `3` fill, `D` for the panel).
+   The first time, Chrome asks at the top of this window to use the camera: click **Allow**.
+   The cable needs it (see "Streaming over an Ethernet cable"); the Mac's camera itself is not
+   used, and Chrome remembers the answer. Leave this window open and visible; the mode and the
+   fill are changed here (`G` remove / grow, `1` `2` `3` fill, `D` for the panel).
 
-3. **On the iPad**, on the same Wi-Fi as the Mac: in Safari, open the address from step 1 with
-   `stream.html` added, for example `https://10.21.12.136:8443/stream.html`, and allow the
-   camera. After a few seconds the picture appears, phones removed (or growing, in grow mode).
-   Double-tap for the iPad's own small panel (it has Screenshot and Record buttons).
+3. **On the iPad**, in Safari, open:
+   - **over Wi-Fi** (the iPad on the same Wi-Fi as the Mac): the address from step 1 with
+     `stream.html` added, for example `https://10.21.12.136:8443/stream.html`;
+   - **over the cable** (the iPad's Wi-Fi off): `https://192.168.77.1:8443/stream.html`.
 
-To stop: Ctrl-C in both Terminal windows. The address changes on another network; step 1 always
-prints the current one. If port 8443 is already taken (another `npm run dev:ipad` running),
-use another port in both windows and on the iPad:
+   Allow the camera. After a few seconds the picture appears, phones removed (or growing, in
+   grow mode), and Terminal window 1 prints `[stream] iPad page connected from …` with the
+   iPad's address (`192.168.77.2` over the cable). Double-tap for the iPad's own small panel
+   (it has Screenshot and Record buttons).
+
+To stop: Ctrl-C in both Terminal windows. Over Wi-Fi the address changes on another network;
+step 1 always prints the current one. Over the cable it stays `192.168.77.1`, so a Safari
+bookmark works. If port 8443 is already taken (another `npm run dev:ipad` running), use
+another port in both windows and on the iPad:
 
 ```bash
 npm run dev:ipad -- --port 8444
@@ -211,8 +228,9 @@ other. The stream itself is not stored anywhere; only a screenshot or a screen r
 you ask for one (see below), saves a file. The iPad never shows its own raw camera; it shows
 only what comes back from the Mac, so phones stay hidden even while things start up.
 
-**Start it** as in "Two ways to run it" above. Mac and iPad have to be on the same network; your
-own small travel router or a phone hotspot is better than venue Wi-Fi (see below). The order
+**Start it** as in "Two ways to run it" above. Mac and iPad have to be on the same network:
+the same Wi-Fi (your own small travel router or a phone hotspot is better than venue Wi-Fi, see
+below), or one Ethernet cable between them (see "Streaming over an Ethernet cable"). The order
 does not matter, and either side can be reloaded at any time: the iPad reconnects by itself.
 Settings for the mode (remove / grow), the fill and the detector are made on the Mac (`D` for
 the panel). On the iPad, double-tap for its own small panel: screenshot, screen recording,
@@ -265,9 +283,12 @@ that slowing-down switched off, and keeps the Mac awake while it runs. Keep the 
 - The codec is H.264 by default (hardware on both devices). If the picture stutters or freezes
   repeatedly, try `?codec=vp8` on the iPad's address; the Mac follows.
 - Venue and university Wi-Fi often stop devices from reaching each other, and at an exhibition
-  the Wi-Fi is full of visitors' phones. Your own router (no internet needed) avoids both.
+  the Wi-Fi is full of visitors' phones. Your own router (no internet needed) or the Ethernet
+  cable avoids both.
 - Anyone on the same network who opens the stream page takes over the Mac's picture (the newest
-  page wins). Another reason for your own network.
+  page wins). Another reason for your own network. Over the cable, see "Who else can reach the
+  Mac" in "Streaming over an Ethernet cable".
+- Over the cable: see "If the cable doesn't connect" there.
 - `?latency` on the iPad's address measures the round trip with a counter in the corner
   (shown in its panel and the terminal). Only for testing: the counter is visible.
 
@@ -297,8 +318,9 @@ visible difference; at 640×480 the video only uses about 1.7–1.9 Mbit/s.
    and Safari's camera permission set to Allow (see above).
 2. Look: does a phone disappear? How does the lag feel when you wave? Is the picture sharp
    enough on the 12.9" screen?
-3. Break it: reload the iPad page; turn the iPad's Wi-Fi off for 10 s and on again; reload the
-   Mac page; leave it running for 30 min.
+3. Break it: reload the iPad page; turn the iPad's Wi-Fi off for 10 s and on again (over the
+   cable: pull the cable out for 10 s and plug it back in); reload the Mac page; leave it
+   running for 30 min.
 4. Once, add `?latency` to the iPad's address, for the round-trip number.
 5. For the show: Guided Access on the iPad (Settings → Accessibility → Guided Access) keeps
    Safari in front. Restart the Mac before, and open only what the piece needs: when the Mac
@@ -306,6 +328,120 @@ visible difference; at 640×480 the video only uses about 1.7–1.9 Mbit/s.
    a fill update every second or so.
 
 The numbers end up in the Mac's terminal and in `captures/device-report.jsonl`.
+
+## Streaming over an Ethernet cable
+
+The same streaming mode, with a cable instead of Wi-Fi:
+
+```
+iPad ── USB-C Ethernet adapter ── Ethernet cable ── USB-C Ethernet adapter ── Mac
+192.168.77.2                                                         192.168.77.1
+```
+
+No router, no Wi-Fi, no internet: the two devices are a network of their own. Tested on 20 Nov
+with the real iPad: the picture comes through, and a ping over the cable takes about 1.5 ms
+(the link runs at 1 Gbit/s).
+
+What changes compared with Wi-Fi:
+
+- The venue's Wi-Fi no longer matters: no network that stops devices from reaching each other,
+  no visitors' phones crowding it.
+- None of Wi-Fi's unevenness, which made both browsers hold frames longer (about 94 ms on the
+  Mac and 125 ms on the iPad in one session, see "Measured on the real iPad" above). How much
+  lag this saves on the real iPad has not been measured yet: add `?latency` to the iPad's
+  address to measure it.
+- What stays is the fixed part of the lag: compressing and decompressing twice, and the
+  processing (about 70–100 ms round trip in the test on this Mac, without any network).
+
+### What you need
+
+- **One Ethernet cable** (also called LAN or network cable; any "Cat 5e" or "Cat 6"). Ethernet
+  works up to 100 m, so the Mac can be further from the iPad than a USB cable allows.
+- **For the iPad: a USB-C to Ethernet adapter.** The iPad has one USB-C port, so an adapter
+  that also has a USB-C charging socket ("PD", "Power Delivery", "pass-through charging") lets
+  it charge at the same time; then use a charger of 30 W or more, since the adapter takes part
+  of the power. Without one, the iPad runs on its battery.
+- **For the Mac: a USB-C to Ethernet adapter** (this MacBook Pro has no Ethernet port). The one
+  tested shows up in macOS as **AX88179B**, the chip inside it.
+
+With its adapter plugged in, the iPad's Settings show an **Ethernet** entry below Wi-Fi. Once
+the cable is in at both ends, the small lights on the adapters' sockets usually come on.
+
+### Once: fixed addresses
+
+Without a router, nothing hands out addresses on the cable, and the ones the devices then pick
+for themselves (169.254.x.x) are not covered by the certificate. So each gets a fixed address,
+set once. The setting belongs to the adapter: a different adapter needs it again.
+
+**On the Mac:** System Settings → Network → the adapter (**AX88179B**) → Details… → TCP/IP →
+Configure IPv4: **Manually**. IP address `192.168.77.1`, subnet mask `255.255.255.0`, router
+left empty → OK.
+
+**On the iPad:** Settings → Ethernet → the adapter → Configure IP → **Manual**. IP address
+`192.168.77.2`, subnet mask `255.255.255.0`, router left empty → Save. Turn the iPad's
+**Wi-Fi** off, so the cable is its only connection.
+
+The router stays empty on both, so the Mac keeps using its Wi-Fi for the internet. To check the
+cable, on the Mac:
+
+```bash
+ping -c 3 192.168.77.2
+```
+
+Three replies of a millisecond or two mean the cable works.
+
+### Each time
+
+As in "Two ways to run it": both Terminal windows, then, on the iPad with its Wi-Fi off,
+`https://192.168.77.1:8443/stream.html`. The cable can be plugged in before or after the server
+starts: the certificate always includes `192.168.77.1`.
+
+### Why the Mac's window asks for the camera
+
+Chrome lets a page use all of the Mac's network connections for WebRTC only if the page may use
+the camera. Without that permission it offers only the connection the Mac uses for the
+internet, usually Wi-Fi, which the iPad on the cable cannot reach. The first try over the cable
+failed exactly so (20 Nov): the iPad page loaded, but no picture came. So the Mac's page asks
+for the camera, puts it away at once, and never uses it.
+
+The answer is remembered in the stream window's own Chrome profile, so it asks only once (once
+per port: with `PORT=8444` it asks again). When it asks, Terminal window 1 prints the result:
+`camera permission granted: the Ethernet cable can be used`, or `no camera permission …` /
+`camera permission blocked …`. Over Wi-Fi the stream works either way.
+
+If **Block** was clicked by mistake: stop the window (Ctrl-C in Terminal window 2), delete its
+profile, and start it again; it asks again. This also resets the settings made in that window
+(mode, fill, sliders) to their defaults.
+
+```bash
+rm -rf ~/Library/Application\ Support/Device\ Remover/chrome-stream
+```
+
+### Who else can reach the Mac
+
+Over the cable, only the iPad is on that network. But as long as the Mac is also on Wi-Fi, the
+server answers there too: someone on that Wi-Fi who opens the stream page would take over the
+picture (the newest page wins). With the Mac's Wi-Fi off, the cable is its only network; the
+piece needs no internet. The stream with the Mac's Wi-Fi off has not been tried yet.
+
+### If the cable doesn't connect
+
+- **No Ethernet entry in the iPad's Settings:** the iPad does not see its adapter. Unplug it
+  and plug it in again. Some adapters power their Ethernet part only when a charger is
+  connected to them.
+- **`ping -c 3 192.168.77.2` gets no replies:** push both plugs in until they click and check
+  the lights, then the fixed addresses above (both masks `255.255.255.0`, the iPad's Wi-Fi off).
+- **`npm run dev:ipad` does not list `https://192.168.77.1:8443/`:** the Mac does not have the
+  address at the moment (cable out, or the Mac's setting above). The server need not be
+  restarted; the iPad can connect once the address is there.
+- **The page loads on the iPad but no picture comes:** see the camera permission above.
+  Terminal window 1 shows `[stream] iPad page connected from 192.168.77.2`, and then
+  `[Mac Chrome] status: link failed`.
+- **Other addresses:** if `192.168.77.x` is already used by another network on the Mac, pick
+  another private range, for example Mac `192.168.78.1` and iPad `192.168.78.2`, and start the
+  server with `DEVICE_REMOVER_WIRED_IP=192.168.78.1 npm run dev:ipad` so the certificate always
+  includes it. It has to be a private address (`10.x`, `172.16.x`–`172.31.x` or `192.168.x`):
+  those are the only ones the certificate authority can vouch for.
 
 ## Exporting the YOLO model by hand
 
@@ -495,15 +631,28 @@ Until then a note says "click or press any key for sound". Pressing `H` counts.
 - **Silence**, unless a phone is in focus. A phone is in focus once the tracker has decided on
   it (the same watching as in the other modes, but for 0.5 s instead of 1 s: "Hijack: watch a
   new phone for") and it has been inside the focus zone for 0.25 s.
-- Then that person's sound **tunes in** over about a second: a short sweep of radio-like
-  noise, and the sound going from muffled and slightly flat to clear.
+- Then the person's sound **breaks in**, over 0.8 s: a digital signal coming through in
+  bursts, coarse and thin, over the low rumble of the carriage. Then it **seals**: the rumble is
+  cut off with a soft thump, a short hiss like noise cancelling closing in, and the sound opens
+  up.
+- It is **already playing**: each person's sound has been going since before the camera saw
+  them (a random 0–2 minutes, fixed per person), so it is joined mid-phrase, and when you come
+  back to the same person it has moved on without you.
+- **The edge of the zone is the leak, the centre is inside their head.** At the edge you hear
+  what leaks out of someone's earbuds: a small speaker pushed hard (no bass, a strained buzz,
+  the hiss of the top), quiet, placed where the phone is, with some room around it. Towards the
+  centre it becomes what they hear: full, with a little extra bass, dry, and in the middle of
+  your head.
+- When focus leaves, you are **pushed out**: the sound is shut off like a door (muffled and
+  much quieter at once), keeps playing behind it while it fades, and the rumble of the
+  carriage comes back for a moment before the silence.
 - Each person gets one of five **characters**, dealt in turn (two people in a row never get the
   same one), each with its own key, tempo and pattern:
   - **low drone**: detuned saws and a sub, breathing slowly through a filter
   - **soft pulse**: a slow repeating figure of soft notes with an echo
   - **noise wash**: filtered noise swelling and receding like breath or surf, over a rumble
   - **bell plucks**: sparse, irregular bell notes with an echo, like far-off notifications
-  - **muffled headphone beat**: kick, snare, hi-hat and bass, as if leaking from earbuds
+  - **muffled headphone beat**: kick, snare, hi-hat and bass
 - "Hijack: sound" in the panel gives everyone the same character instead (to try them out).
   **Test sound** in the panel plays one for 5 s without a phone: each press the next one, or
   the one chosen there.
@@ -512,9 +661,9 @@ Until then a note says "click or press any key for sound". Pressing `H` counts.
 
 | from the camera | in the sound |
 |---|---|
-| how close the phone is to the centre of the zone | muffled at the edge (the beat: tinny, as if leaking from earbuds), clear in the inner 30 % |
-| where it is, left to right | left to right in the headphones, as on screen: with the mirror on (`X`), as in a mirror |
-| how big it is in the picture | close: louder and drier; far: quieter, with more room |
+| how close the phone is to the centre of the zone | from the leak (edge) to inside their head (inner 30 %), gradually |
+| where it is, left to right | at the edge: left to right in the headphones, as on screen (with the mirror on, `X`, as in a mirror); towards the centre it moves into the middle of your head |
+| how big it is in the picture | close: louder; far: quieter, and at the edge with more room |
 | how long it has been held | more layers (a fifth, higher notes, the bass, a longer echo), full after 30 s ("Hijack: holding time to full build-up") |
 | how much it moves | busier rhythm, faster tremolo and swells (under half a phone length a second counts as still) |
 
@@ -522,10 +671,10 @@ Until then a note says "click or press any key for sound". Pressing `H` counts.
 
 - The phone in focus stays in focus while it is inside the zone (with 25 % slack), and for 2 s
   after it is lost ("Hijack: keep sound when phone lost"), so a detection dropout does not cut
-  the sound. Then the sound fades out over about 1.5 s.
+  the sound. Then you are pushed out (above).
 - Another phone takes over only when it is clearly more centred (by a quarter of the zone's
   radius) for 0.6 s, and not within 1.5 s of the last switch.
-- Leaving hijack mode fades the sound out; so does the camera stopping (no new frame for 3 s).
+- Leaving hijack mode pushes you out too; so does the camera stopping (no new frame for 3 s).
 - "Hijack: focus zone (radius)" sets the zone's size (default: 30 % of the picture height).
 
 **Volume and safety.** "Hijack: volume" in the panel (default 50 %). At the end of the chain a
@@ -538,18 +687,27 @@ own volume.
 **Measured** (`npm run check:hijack`: headless Chrome on the M2 Max, the moving test clip as
 webcam, focus zone set to the whole picture, volume 50 %):
 
-- From a fresh start, the phone was in focus after 0.81 s and heard after 0.86 s.
-- Live levels while in focus (3 s each, with the clip's phone about 70 % clear): drone -22.6,
-  pulse -22.8, wash -25.5, plucks -28.3, beat -26.4 dB RMS; the highest peak -7.6 dB.
-- Rendered offline (the files below), clear: drone -22.2, pulse -23.8, wash -24.3, plucks
-  -25.9, beat -26.9 dB RMS; at the edge of the zone 4 to 6.5 dB quieter (the beat 8.5 dB:
-  it is tinny there); the highest peak -5.9 dB.
-- Silent 2.6 s after switching to remove mode. A picture without a phone: silent for all 6 s.
-- These are measurements, not listening: the sounds have not been judged by ear.
+- From a fresh start, the phone was in focus after 0.85 s and heard after 0.88 s.
+- Live levels while in focus (3 s each, the clip's phone about 55–70 % towards the centre):
+  drone -20.3, pulse -25.6, wash -23.0, plucks -24.6, beat -23.8 dB RMS; highest peak -9.1 dB.
+- Rendered offline (the files below):
+  - inside: drone -20.8, pulse -24.0, wash -22.6, plucks -27.5, beat -24.8 dB RMS, centred
+    (left and right within 0.5 dB);
+  - the leak at the edge: -31.9 to -37.7 dB RMS, 7 to 14 dB below inside, 8 dB louder on the
+    phone's side, and 9 to 31 dB less bass (below 200 Hz) than inside;
+  - the rumble while breaking in: about -28 dB RMS, cut off by 18 to 26 dB at the seal;
+  - the door: 5 to 9 dB quieter (above 200 Hz) within 0.3 s, then fading;
+  - highest peak -6.7 dB (the ceiling is -1.9 dB); silent (below -74 dB) 3 s after being pushed out.
+- Silent 2.8 s after switching to remove mode. A picture without a phone: silent for all 6 s.
+- The leak's level is calibrated per character (`leakLiftDb` in `src/audio/voices.ts`):
+  without it the drone and the beat, which are mostly bass, were 23 to 29 dB below inside at
+  the edge, nearly inaudible, and the bells were louder at the edge than inside.
+- These are measurements, not listening: how it sounds has not been judged by ear here.
 
 **To hear the characters without a camera:** `npm run check:hijack` (dev server running) writes
-`captures/hijack_drone.wav` and so on, 14 s each: tuning in from the edge of the zone and from
-the left (0–4 s), building up (4–8 s), moving (8–10 s), still (10–11 s), tuning out (from 11 s).
+`captures/hijack_drone.wav` and so on, 15 s each, joined 37 s into the person's sound: breaking
+in at the edge of the zone, on the left (0–0.8 s), the leak (to 3 s), moving into the centre
+(3–5 s), inside, building up (5–9 s), moving (9–11 s), still (11–12 s), pushed out (at 12 s).
 
 Limits:
 

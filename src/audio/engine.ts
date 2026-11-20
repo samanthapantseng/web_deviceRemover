@@ -9,10 +9,15 @@
 // filter, many voices at once) can ever be louder than the ceiling: about -2 dB below full scale,
 // at any volume setting.
 //
+// Around each voice the engine adds the outside world, for a moment only (silence otherwise):
+// breaking in, the low rumble of the carriage is heard under the stuttering signal and is cut
+// off when the seal closes (a soft thump and the hiss of noise cancelling); pushed out, the
+// rumble comes back for a moment before the silence.
+//
 // The engine works on a live AudioContext (LiveSound below) and on an OfflineAudioContext (the
 // test renders sound files with it, faster than real time).
 import type { CharacterId } from '../settings';
-import { clamp01, makeVoice, type Kit, type Voice, type VoiceParams } from './voices';
+import { BREAK_IN_S, clamp01, makeVoice, type Kit, type Voice, type VoiceParams } from './voices';
 
 /** Highest possible output sample value (0.8 = -1.9 dBFS). */
 export const CEILING = 0.8;
@@ -31,6 +36,8 @@ export interface Levels {
 export class SoundEngine {
   readonly ctx: BaseAudioContext;
   private kit: Kit;
+  /** Brown noise: the carriage's rumble. */
+  private rumble: AudioBuffer;
   private dry: GainNode;
   private wet: GainNode;
   private volume: GainNode;
@@ -46,7 +53,8 @@ export class SoundEngine {
 
   constructor(ctx: BaseAudioContext, volume: number) {
     this.ctx = ctx;
-    this.kit = { ctx, noise: noiseBuffer(ctx) };
+    this.kit = { ctx, noise: noiseBuffer(ctx), crush: crushCurve(), strain: tanhCurve(1) };
+    this.rumble = brownNoise(ctx);
     this.dry = new GainNode(ctx);
     this.wet = new GainNode(ctx);
     const reverb = new ConvolverNode(ctx, { buffer: roomImpulse(ctx), disableNormalization: false });
@@ -83,16 +91,18 @@ export class SoundEngine {
   }
 
   /**
-   * Listen to someone: `key` identifies them (and their character). The same key again only
-   * updates the numbers; a new key tunes the old voice out while the new one tunes in.
+   * Listen to someone: `key` identifies them (and their character), `elapsed` is how long
+   * (s) their sound has been playing already. The same key again only updates the numbers; a
+   * new key pushes the old voice out while the new one breaks in.
    */
-  focus(key: string, character: CharacterId, seed: number, p: VoiceParams, at = this.ctx.currentTime): void {
+  focus(key: string, character: CharacterId, seed: number, p: VoiceParams, elapsed = 0, at = this.ctx.currentTime): void {
     this.lastUpdate = performance.now();
     if (key === this.currentKey && this.current) return this.current.set(p, at);
-    this.release(at);
+    const switching = !!this.current;
+    this.release(at, !switching);
     const v = makeVoice(character, this.kit, seed, this.dry, this.wet);
-    v.start(p, at);
-    this.burst(at, p.pan, 1);
+    v.start(p, at, elapsed);
+    this.breakIn(at);
     this.voices.add(v);
     this.current = v;
     this.currentKey = key;
@@ -105,11 +115,11 @@ export class SoundEngine {
     this.current?.set(p, at);
   }
 
-  /** Tune out of the voice in focus: back to silence. */
-  release(at = this.ctx.currentTime): void {
+  /** Push out of the voice in focus: back to silence (with `outside`, through a moment of the rumble). */
+  release(at = this.ctx.currentTime, outside = true): void {
     if (!this.current) return;
     this.current.tuneOut(at);
-    this.burst(at, 0, 0.35);
+    if (outside) this.pushOut(at);
     this.current = null;
     this.currentKey = '';
   }
@@ -118,9 +128,10 @@ export class SoundEngine {
   preview(character: CharacterId, seed: number, seconds = 5): void {
     const at = this.ctx.currentTime + 0.05;
     const v = makeVoice(character, this.kit, seed, this.dry, this.wet);
-    v.start({ pan: 0, clarity: 1, closeness: 0.7, build: 0.6, activity: 0.3 }, at);
+    v.start({ pan: 0, clarity: 1, closeness: 0.7, build: 0.6, activity: 0.3 }, at, Math.random() * 90);
     v.tuneOut(at + seconds);
-    this.burst(at, 0, 1);
+    this.breakIn(at);
+    this.pushOut(at + seconds);
     this.voices.add(v);
     v.schedule(at + LOOKAHEAD);
   }
@@ -159,29 +170,84 @@ export class SoundEngine {
     return this.recordDest.stream;
   }
 
-  /** A short sweep of radio-like noise: the sound of tuning in (or, quieter, out). */
-  private burst(at: number, pan: number, strength: number): void {
+  /** The carriage's rumble under the breaking-in signal, cut off by the seal: a thump and a hiss. */
+  private breakIn(at: number): void {
     const { ctx } = this;
-    const src = new AudioBufferSourceNode(ctx, { buffer: this.kit.noise, loop: true });
-    const bp = new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 3200, Q: 3 });
+    const seal = at + BREAK_IN_S;
+    const rumble = this.rumbleAt(at, seal + 0.3);
+    rumble.setValueAtTime(0, at);
+    rumble.setTargetAtTime(0.22, at, 0.08);
+    rumble.setTargetAtTime(0, seal, 0.02);
+    // The thump of the seal: a soft, very low knock.
+    const knock = new OscillatorNode(ctx, { frequency: 70 });
+    const kg = new GainNode(ctx, { gain: 0 });
+    knock.frequency.setValueAtTime(70, seal);
+    knock.frequency.exponentialRampToValueAtTime(40, seal + 0.12);
+    kg.gain.setValueAtTime(0, seal);
+    kg.gain.linearRampToValueAtTime(0.35, seal + 0.006);
+    kg.gain.exponentialRampToValueAtTime(0.0005, seal + 0.18);
+    knock.connect(kg).connect(this.dry);
+    knock.start(seal);
+    knock.stop(seal + 0.2);
+    // The hiss of noise cancelling closing in, fading.
+    const hiss = new AudioBufferSourceNode(ctx, { buffer: this.kit.noise, loop: true });
+    const hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 3500 });
+    const hg = new GainNode(ctx, { gain: 0 });
+    hg.gain.setValueAtTime(0, seal);
+    hg.gain.linearRampToValueAtTime(0.03, seal + 0.02);
+    hg.gain.setTargetAtTime(0, seal + 0.05, 0.4);
+    hiss.connect(hp).connect(hg).connect(this.dry);
+    hiss.start(seal, Math.random() * 1.5);
+    hiss.stop(seal + 2.5);
+  }
+
+  /** Pushed out: the rumble of the outside for a moment, then silence. */
+  private pushOut(at: number): void {
+    const rumble = this.rumbleAt(at, at + 2);
+    rumble.setValueAtTime(0, at);
+    rumble.setTargetAtTime(0.16, at, 0.05);
+    rumble.setTargetAtTime(0, at + 0.25, 0.25);
+  }
+
+  /** A rumble source playing from `at` to `until`; returns its level to shape. */
+  private rumbleAt(at: number, until: number): AudioParam {
+    const { ctx } = this;
+    const src = new AudioBufferSourceNode(ctx, { buffer: this.rumble, loop: true });
+    const lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 180 });
     const g = new GainNode(ctx, { gain: 0 });
-    const pn = new StereoPannerNode(ctx, { pan: Math.max(-0.85, Math.min(0.85, pan)) });
-    bp.frequency.setValueAtTime(3200, at);
-    bp.frequency.exponentialRampToValueAtTime(450, at + 0.8);
-    g.gain.setValueAtTime(0, at);
-    g.gain.linearRampToValueAtTime(0.25 * strength, at + 0.06);
-    g.gain.setTargetAtTime(0, at + 0.15, 0.2);
-    src.connect(bp).connect(g).connect(pn);
-    pn.connect(this.dry);
-    pn.connect(this.wet);
-    src.start(at, Math.random() * 1.5);
-    src.stop(at + 1.6);
+    src.connect(lp).connect(g).connect(this.dry);
+    src.start(at, Math.random() * 2);
+    src.stop(until);
+    return g.gain;
   }
 }
 
 /** Volume setting (0..1) to gain: a curve, so the lower half of the slider is still usable. */
 function volumeGain(v: number): number {
   return 1.6 * clamp01(v) ** 2;
+}
+
+/** Brown noise (integrated white noise, normalised): a low, soft rumble. */
+function brownNoise(ctx: BaseAudioContext): AudioBuffer {
+  const buf = ctx.createBuffer(1, Math.round(ctx.sampleRate * 3), ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  let b = 0;
+  let peak = 0;
+  for (let i = 0; i < d.length; i++) {
+    b = (b + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+    d[i] = b;
+    peak = Math.max(peak, Math.abs(b));
+  }
+  for (let i = 0; i < d.length; i++) d[i] /= peak || 1;
+  return buf;
+}
+
+/** Staircase curve: the signal rounded to coarse steps (about 4 bits), the sound of a bad digital link. */
+function crushCurve(): Float32Array<ArrayBuffer> {
+  const n = 4096;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) curve[i] = Math.round(((i / (n - 1)) * 2 - 1) * 8) / 8;
+  return curve;
 }
 
 function noiseBuffer(ctx: BaseAudioContext): AudioBuffer {
@@ -209,12 +275,19 @@ function roomImpulse(ctx: BaseAudioContext): AudioBuffer {
 
 /** tanh-shaped curve: gentle saturation that can never go past ±1. */
 function softClipCurve(): Float32Array<ArrayBuffer> {
-  const n = 2048;
+  return tanhCurve(1.4, true);
+}
+
+/**
+ * tanh(k·x) over -1..1 (inputs beyond are held at the ends). `normalise`: scaled so ±1 maps to
+ * ±1; otherwise plain tanh, which is close to x for small signals.
+ */
+function tanhCurve(k: number, normalise = false): Float32Array<ArrayBuffer> {
+  const n = 4096;
   const curve = new Float32Array(n);
-  const k = 1.4;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
-    curve[i] = Math.tanh(k * x) / Math.tanh(k);
+    curve[i] = Math.tanh(k * x) / (normalise ? Math.tanh(k) : 1);
   }
   return curve;
 }

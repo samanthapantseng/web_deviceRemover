@@ -971,3 +971,61 @@ drone -22.2, pulse -23.8, wash -24.3, plucks -25.9, beat -26.9 dB RMS; the beat'
 Not verified: how any of it sounds (nobody has listened yet); live with a real person, a moving
 laptop and headphones; how the focus behaves when sweeping across several people.
 
+## 2026-11-19 · hijack mode: from "tuning a radio" to breaking into someone's bubble
+
+After trying the first version the user said the sounds felt random: it did not feel like
+"hijacking someone's private coping mechanism". Talked through why (the characters are kinds of
+sound, not things people do with headphones; you hear them from outside, placed in the room;
+who gets what is dealt at random), and three directions: characters as coping strategies
+(shutting out, company, the same song again, scrolling), visible mappings (a moving phone →
+scrolling, time held → deeper in), and the transitions in and out. The user chose to build the
+transitions first: they change all five characters at once without new sound design.
+
+### What changed (`src/audio/voices.ts`, `src/audio/engine.ts`, `src/effects/hijack.ts`)
+
+- **Already playing.** Each person has a clock of their own, started a random 0–2 min (fixed
+  per person) before the camera saw them. A voice starts that far into its timeline: the
+  pulse and the beat land mid-bar on their 16th-note grid, slow swells (drone, wash) are joined
+  midway (LFOs started at the right phase with a PeriodicWave), and the bells start with one
+  note already ringing. Coming back to the same person (while the tracker still follows them),
+  the sound has moved on.
+- **Edge = leak, centre = inside their head.** Replaces the per-character muffling (a low-pass
+  that opened; for the beat a high-pass). All characters now share one chain whose settings
+  move with clarity: at the edge an overdriven, slightly lopsided small speaker (tanh with
+  drive 14 and an offset), a bump at 2.5 kHz, only 650 Hz–9 kHz, quieter, panned to the phone,
+  more reverb; inside: clean, full range, +5 dB low shelf, dry, and panned to the centre.
+- **Breaking in** replaces the radio-noise sweep and the pitch glide: 0.8 s of dropouts (the
+  signal gated on and off in 20–90 ms pieces, holding longer towards the end) and a 4-bit
+  staircase (bit-crushed) sound, over a brown-noise rumble (the carriage). Then the seal: the
+  rumble is cut, a soft 70→40 Hz knock, a short high hiss, and the filters open.
+- **Pushed out** replaces the fade: the sound is muffled to 350 Hz and dropped about 10 dB at
+  once, keeps playing behind that while it fades, and the rumble comes back for about 0.5 s.
+
+### Tuning (measured, not heard)
+
+- First measurement: the drone and the beat were nearly gone at the edge (-45 dB RMS, 29 and
+  23 dB below inside) because they are mostly bass, and the leak removed the hi-hats too (its
+  low-pass was at 4.2 kHz). The rumble was as loud as the voices (-21 dB) and covered the
+  dropouts. A first overdrive (drive 8, symmetric) did not help: the drone's overtones stay
+  under 650 Hz.
+- Changed: leak low-pass 4.2 → 9 kHz; drive 8 → 14 with an offset (even overtones); rumble
+  about 6 dB down; and a per-character correction of the leak (`leakLiftDb`: drone +16, beat
+  +8, pulse +1, wash 0, bells -9) so that every leak sits 7–14 dB below its inside level (the
+  bells had been louder at the edge than inside). The drone was then about 4 dB above the
+  others inside (the extra bass favours it): its level 0.3 → 0.22.
+- Result: see README, "Hijack mode", "Measured".
+
+### Checked
+
+- `npm run check:hijack`: no console errors; the offline renders show the leak on the phone's
+  side (about 8 dB) and centred inside (within 0.5 dB), the rumble cut at the seal, the door
+  drop, silence afterwards, peaks at or below -6.7 dB. Live: heard 0.88 s after a fresh start,
+  silent 2.8 s after leaving the mode, a picture without a phone stays silent, recording has
+  sound.
+- In the app's browser pane (regular Chrome): on a stock photo the phone locks on (the beat,
+  fully centred) with no console errors.
+- Typecheck passes.
+
+Not verified: how any of it sounds; the dropouts are not measured (the rumble under them hides
+them from a level measurement); live with a person and headphones.
+
