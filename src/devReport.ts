@@ -29,8 +29,24 @@ export function wasmMemoryMB(): number[] {
 function deviceName(): string {
   const ua = navigator.userAgent;
   const touch = navigator.maxTouchPoints > 0;
-  const os = /iPad/.test(ua) || (/Macintosh/.test(ua) && touch) ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : /Mac/.test(ua) ? 'Mac' : 'device';
-  const browser = /CriOS|Chrome\//.test(ua) ? 'Chrome' : /FxiOS|Firefox/.test(ua) ? 'Firefox' : /Safari/.test(ua) ? 'Safari' : 'browser';
+  const os = /OculusBrowser|Quest/.test(ua)
+    ? 'Quest'
+    : /iPad/.test(ua) || (/Macintosh/.test(ua) && touch)
+      ? 'iPad'
+      : /iPhone/.test(ua)
+        ? 'iPhone'
+        : /Mac/.test(ua)
+          ? 'Mac'
+          : 'device';
+  const browser = /OculusBrowser/.test(ua)
+    ? 'Browser'
+    : /CriOS|Chrome\//.test(ua)
+      ? 'Chrome'
+      : /FxiOS|Firefox/.test(ua)
+        ? 'Firefox'
+        : /Safari/.test(ua)
+          ? 'Safari'
+          : 'browser';
   return `${os} ${browser}`;
 }
 

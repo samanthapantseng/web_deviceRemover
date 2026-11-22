@@ -8,6 +8,9 @@
 //   npm run check:stream -- captures/clip_moving.y4m --minutes 30      # then a soak test
 //   npm run check:stream -- captures/clip_moving.y4m --no-recovery     # skip the interruptions
 //   BASE=https://localhost:8444/ npm run check:stream -- ...           # another server
+//   DEVICE=quest npm run check:stream -- captures/clip_moving.y4m      # as Quest Browser (headset camera),
+//                                                                       # with the room view on a pretend headset
+//   SHOW_CONSOLE=1 …                                                   # print both pages' console
 //
 // Writes captures/stream_sheet.jpg: what the "iPad" sent (left) and got back (right), 4 frames.
 // Both pages run on this Mac, so this says nothing about Wi-Fi; that needs the real iPad.
@@ -38,8 +41,90 @@ mkdirSync(outDir, { recursive: true });
 // iPadOS Safari presents itself as a Mac; the touch screen gives it away (as in devReport.ts).
 const IPAD_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Safari/605.1.15';
+// DEVICE=quest: the stream page as Quest Browser on a Quest 3 opens it, so it takes the
+// headset-camera path (here the only camera, the video file, counts as the headset camera).
+const quest = process.env.DEVICE === 'quest';
+const QUEST_UA =
+  'Mozilla/5.0 (X11; Linux x86_64; Quest 3) AppleWebKit/537.36 (KHTML, like Gecko) OculusBrowser/41.2.0 SamsungBrowser/4.0 Chrome/138.0.0.0 VR Safari/537.36';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A pretend headset for the room view (DEVICE=quest): just enough WebXR for questXr.ts to run.
+// The head stays still at the origin looking down -z; the eyes 6.4 cm apart; each eye's view
+// 80° wide (the default camera setting), side by side in a 1280×480 canvas. One right
+// controller whose buttons the check presses. capture() returns the next frame as a JPEG.
+function fakeXr() {
+  const point = (x, y, z, w = 1) => new DOMPointReadOnly(x, y, z, w);
+  const rigid = (x) => {
+    const m = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1]);
+    const inv = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -x, 0, 0, 1]);
+    const t = { position: point(x, 0, 0), orientation: point(0, 0, 0, 1), matrix: m };
+    t.inverse = { position: point(-x, 0, 0), orientation: point(0, 0, 0, 1), matrix: inv, inverse: t };
+    return t;
+  };
+  const f = 1 / Math.tan((80 * Math.PI) / 180 / 2);
+  const aspect = 640 / 480;
+  const near = 0.05;
+  const far = 50;
+  const proj = new Float32Array([f, 0, 0, 0, 0, f * aspect, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0]);
+  const views = [
+    { eye: 'left', projectionMatrix: proj, transform: rigid(-0.032) },
+    { eye: 'right', projectionMatrix: proj, transform: rigid(0.032) },
+  ];
+  const pose = { transform: rigid(0), views };
+  const buttons = Array.from({ length: 6 }, () => ({ pressed: false, value: 0 }));
+  const state = { canvas: null, wantCapture: null, frames: 0 };
+  class FakeSession extends EventTarget {
+    inputSources = [{ handedness: 'right', gamepad: { buttons, axes: [0, 0, 0, 0] } }];
+    visibilityState = 'visible';
+    environmentBlendMode = 'alpha-blend';
+    frameRate = 90;
+    ended = false;
+    async requestReferenceSpace() {
+      return new EventTarget();
+    }
+    updateRenderState() {}
+    requestAnimationFrame(cb) {
+      return setTimeout(() => {
+        if (this.ended) return;
+        state.frames++;
+        cb(performance.now(), { getViewerPose: () => pose });
+        if (state.wantCapture && state.canvas) {
+          state.wantCapture(state.canvas.toDataURL('image/jpeg', 0.85));
+          state.wantCapture = null;
+        }
+      }, 11);
+    }
+    async end() {
+      this.ended = true;
+      this.dispatchEvent(new Event('end'));
+    }
+  }
+  class FakeLayer {
+    constructor(_session, gl) {
+      this.framebuffer = null;
+      gl.canvas.width = 1280;
+      gl.canvas.height = 480;
+      state.canvas = gl.canvas;
+    }
+    getViewport(view) {
+      return { x: view.eye === 'left' ? 0 : 640, y: 0, width: 640, height: 480 };
+    }
+  }
+  Object.defineProperty(navigator, 'xr', {
+    value: { isSessionSupported: async () => true, requestSession: async () => new FakeSession() },
+  });
+  window.XRWebGLLayer = FakeLayer;
+  window.__fakeXr = {
+    frames: () => state.frames,
+    capture: () => new Promise((r) => (state.wantCapture = r)),
+    // Held for a few frames, like a real press.
+    press: (i) => {
+      buttons[i].pressed = true;
+      setTimeout(() => (buttons[i].pressed = false), 120);
+    },
+  };
+}
 const problems = [];
 const common = ['--no-first-run', '--no-default-browser-check', '--autoplay-policy=no-user-gesture-required'];
 
@@ -47,6 +132,7 @@ function watch(page, who) {
   page.on('pageerror', (e) => problems.push(`${who} page error: ${e.message}`));
   page.on('console', (m) => {
     const t = m.text();
+    if (process.env.SHOW_CONSOLE) console.log(`  [${who} console.${m.type()}] ${t.slice(0, 300)}`);
     if (m.type() !== 'error') return;
     // onnxruntime noise, and the 409 a page gets while the other one is away (expected here).
     if (/VerifyEachNode|Rerunning with verbose|status of 409/.test(t)) return;
@@ -81,8 +167,10 @@ async function openMac() {
 
 async function openIpad() {
   const page = watch(await ipadBrowser.newPage(), 'iPad');
-  await page.setUserAgent(IPAD_UA);
-  await page.goto(`${base}stream.html?latency${codec}`, { waitUntil: 'domcontentloaded' });
+  await page.setUserAgent(quest ? QUEST_UA : IPAD_UA);
+  if (quest) await page.evaluateOnNewDocument(fakeXr);
+  // As a Quest: also ask for the room view's patches (there is no headset here to enter it).
+  await page.goto(`${base}stream.html?latency${codec}${quest ? '&patches' : ''}`, { waitUntil: 'domcontentloaded' });
   return page;
 }
 
@@ -128,12 +216,28 @@ try {
 
   // 2. Each fill mode: Mac speed, what the iPad shows, round trip.
   const rows = [];
+  const patchRows = [];
   for (const fill of ['migan', 'telea', 'stylised']) {
     await mac.evaluate((f) => window.deviceRemover.store.set('fill', f), fill);
     await sleep(2500);
     await ipad.evaluate(() => window.streamPage.resetLatency());
     await sleep(6000);
     const [i, m] = [await ipadState(ipad), await macState(mac)];
+    if (quest) {
+      const [qp, mp] = await Promise.all([ipad.evaluate(() => window.streamPage.patches()), mac.evaluate(() => window.deviceRemoverStream.patches())]);
+      patchRows.push({
+        fill: m.fill,
+        'patches got': qp.received,
+        'with image': qp.withImage,
+        'patch delay ms': r0(qp.delayMs),
+        'Mac sent': mp.sent,
+        'Mac empty': mp.empty,
+        'Mac skipped': mp.skipped,
+        unreadable: mp.unreadable,
+        'KB / patch': r1(mp.avgKB),
+        numbering: qp.stamping,
+      });
+    }
     rows.push({
       fill: m.fill,
       'iPad shows fps': r0(i.shownFps),
@@ -150,8 +254,65 @@ try {
     });
   }
   console.table(rows);
+  if (quest) {
+    console.log('room view patches (counts since the page opened; delay: frame stamped → patch arrived):');
+    console.table(patchRows);
+    if (!patchRows.at(-1)?.['with image']) problems.push('no patches with an image arrived');
+  }
   if (rows.some((r) => !r.samples)) {
     problems.push('no round-trip samples for at least one fill mode (bar code unreadable?)');
+  }
+
+  // 2b. As a Quest: the room view, on the pretend headset.
+  if (quest) {
+    await mac.evaluate(() => window.deviceRemover.store.set('fill', 'telea'));
+    await ipad.waitForSelector('.enter-xr:not(.gone)', { timeout: 10_000 });
+    const mac0 = await mac.evaluate(() => window.deviceRemoverStream.patches());
+    await ipad.click('.enter-xr');
+    await sleep(4000);
+    const rv = await ipad.evaluate(() => window.streamPage.roomView());
+    const xrFrames = await ipad.evaluate(() => window.__fakeXr.frames());
+    const mac1 = await mac.evaluate(() => window.deviceRemoverStream.patches());
+    console.log(
+      `room view: ${rv.active ? 'on' : 'OFF'} · ${xrFrames} headset frames · ${rv.patches} patches placed, ${rv.empty} empty, ${rv.unplaced} not placed · patch delay ${r0(rv.patchDelayMs)} ms`,
+    );
+    console.log(
+      `  Mac meanwhile: ${mac1.sent - mac0.sent} sent, ${mac1.skipped - mac0.skipped} skipped (busy), ${r1(mac1.avgKB)} KB each, extra cover ${mac1.margin} px, encoding ${r1(mac1.encodeMs)} ms`,
+    );
+    if (!rv.active) problems.push('the room view did not start');
+    if (!rv.patches) problems.push('no patch was placed in the room view');
+    const shot = (what) => ipad.evaluate(() => window.__fakeXr.capture()).then((url) => ({ what, url }));
+    const views = [await shot('patches only')];
+    // B: the whole frame, half-transparent (lining up).
+    await ipad.evaluate(() => window.__fakeXr.press(5));
+    await sleep(2000);
+    const macFull = await mac.evaluate(() => window.deviceRemoverStream.patches().full);
+    if (!macFull) problems.push('B did not switch the Mac to whole frames');
+    views.push(await shot('whole frame (B)'));
+    // A: the settings panel.
+    await ipad.evaluate(() => window.__fakeXr.press(4));
+    await sleep(800);
+    views.push(await shot('settings panel (A)'));
+    const sent = await ipad.evaluate(() => window.streamPage.grab());
+    const sheet = await ipad.evaluate(async (urls, sentUrl) => {
+      const load = (u) => new Promise((r) => Object.assign(new Image(), { onload: (e) => r(e.target), src: u }));
+      const imgs = await Promise.all(urls.map(load));
+      const cam = await load(sentUrl);
+      const c = document.createElement('canvas');
+      c.width = 1280;
+      c.height = 480 * (imgs.length + 1);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#555';
+      ctx.fillRect(0, 0, c.width, c.height);
+      // Row 0: what the camera sent (left half of grab()), as the left eye would see it.
+      ctx.drawImage(cam, 0, 0, cam.width / 2, cam.height, 0, 0, 640, 480);
+      imgs.forEach((im, k) => ctx.drawImage(im, 0, 480 * (k + 1)));
+      return c.toDataURL('image/jpeg', 0.85);
+    }, views.map((v) => v.url), sent);
+    writeFileSync(join(outDir, 'quest_room_view.jpg'), Buffer.from(sheet.split(',')[1], 'base64'));
+    console.log(`wrote captures/quest_room_view.jpg (camera frame; then left | right eye: ${views.map((v) => v.what).join('; ')})`);
+    await ipad.evaluate(() => window.streamPage.exitRoomView());
+    await sleep(500);
   }
 
   // 3. A look: sent vs. received.

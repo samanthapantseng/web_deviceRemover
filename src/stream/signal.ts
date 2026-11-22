@@ -16,7 +16,8 @@ export type SignalMessage =
       /** Size of the frames the iPad sends (its camera, or the latency test canvas). */
       width: number;
       height: number;
-      facing: 'front' | 'back';
+      /** Which camera: the iPad's front or back one, or a Quest's passthrough ("headset") camera. */
+      facing: 'front' | 'back' | 'headset';
       /** Which codec both sides should prefer (from ?codec= on the iPad's address). */
       codec: CodecChoice;
     }

@@ -1029,3 +1029,156 @@ transitions first: they change all five characters at once without new sound des
 Not verified: how any of it sounds; the dropouts are not measured (the rumble under them hides
 them from a level measurement); live with a person and headphones.
 
+
+## 2026-11-20 · Meta Quest 3, step 1: the stream page in Quest Browser (branch `quest`)
+
+After the iPad, the question was whether the piece works in a VR headset. Research (no code):
+the Mac cannot be a PC VR host, but it does not need to be: a standalone Quest 3 can film and
+show like the iPad, with the Mac doing the work over the network. The real obstacle is delay.
+In a headset the picture is your view: 177 ms (the iPad's round trip on Wi-Fi) behind every
+head turn is far from the about 20 ms usually given for comfort, and a cable only removes Wi-Fi's
+unevenness, not the about 70 ms of compressing and processing measured with no network at all.
+So the plan for the Quest: keep the headset's own passthrough for the room (no delay) and cover
+only the phone with the Mac's fill, anchored in the room using where the head was when that
+camera frame was taken. Then only the patch lags, behind a moving hand.
+
+Camera access on headsets (Nov 2026): Quest 3 / 3S have a public Passthrough Camera API
+(1280×960, 20–40 ms), and Quest Browser gives web pages the cameras through `getUserMedia`
+once "Headset cameras" is allowed (WebXR's own camera access is not supported). Vision Pro
+only for enterprise apps; Android XR through the normal camera permission; see-through glasses
+cannot erase anything (their displays only add light). Prior work found: Steve Mann's mediated
+reality, Brand Killer (2015: webcam, laptop with OpenCV, a screen in welding goggles), Fayteq
+(real-time object removal, bought by Facebook in 2017), diminished-reality research. No artwork
+found that removes phones in a headset.
+
+### What changed
+
+- `src/stream/ipad.ts`: on a Quest (`OculusBrowser` in the user agent) the camera is
+  `headset` by default and not mirrored. The page lists every camera Quest Browser offers
+  (asking for camera access once first, since names are hidden until then) and reports them to
+  the Mac's terminal, then opens an outward-facing one that is not the avatar camera, the left
+  one first. A panel row picks another. If only the avatar camera is listed, the page says how
+  to allow "Headset cameras". Controller clicks open the panel (twice quickly), since they may
+  count as a mouse there.
+- `src/devReport.ts`: reports from a Quest are labelled `Quest Browser`.
+- `src/stream/signal.ts`: the offer's camera can be `headset`.
+- `scripts/stream_check.mjs`: `DEVICE=quest` runs the check with a Quest user agent.
+
+### Checked
+
+- `DEVICE=quest npm run check:stream -- captures/clip_moving.y4m --no-recovery`: headset path
+  taken (camera listed and picked), picture back, round trip median 84 ms for MI-GAN, Telea and
+  stylised; no console errors.
+- `npm run check:stream -- captures/clip_moving.y4m --no-recovery` (as the iPad): unchanged,
+  68–99 ms median, no console errors.
+- Typecheck passes.
+
+### Tried on the real Quest 3 (same day, Quest Browser 157, ZHdK Wi-Fi)
+
+- Works in the browser window: the Quest's camera goes to the Mac, the picture comes back
+  with phones removed. ZHdK's Wi-Fi let the two reach each other directly (expected otherwise).
+- Cameras listed: `camera 0, facing front` (1600×1200, presumably the avatar camera), `camera 1`
+  and `camera 2`, both `facing back` (1728×1728). The page picked `camera 2`; which side it is
+  is not known yet.
+- H.264, 30 fps both ways, network round trip 7–17 ms; frames held before showing about
+  80–105 ms on the Quest, 30–47 ms on the Mac. `?latency` not measured.
+- Steady for about 50 s and 1 min 45 s; in between, many reconnects and reloads. The Quest's
+  page stopped showing frames while they still arrived, and its camera stopped sending; most
+  likely while the headset was off the head or the window out of sight. The recovery made for
+  the iPad reads that as a broken connection. To handle in step 2.
+- Quest Browser reports WebGPU (Adreno 7xx) and 3 CPU cores to the page.
+- Not tried: the immersive view (step 2), the cable.
+
+## 2026-11-20 · Meta Quest 3, step 2: the room view (branch `quest`)
+
+The point of the Quest version: the room stays the headset's own passthrough (no delay), and
+only the phones are covered. Built the same evening, after step 1 worked on the real Quest.
+
+### How
+
+- **Every camera frame numbered** (`latency.ts`). On a Quest the bar code of the latency test
+  is always on. New: with Chrome's "breakout box" (MediaStreamTrackProcessor / Generator, which
+  Quest Browser should have), each camera frame is taken as it arrives, stamped and passed on,
+  so the numbering keeps going while the 2D page is not drawn (in the immersive view it is
+  not). The iPad keeps the canvas way. `readCounter()` now also serves the Mac.
+- **Patches instead of a picture** (`patches.ts`). A second data channel on the same
+  connection (unordered, no retransmission). Only while the Quest is in the room view, the Mac
+  sends for each processed frame what the effect draws over it (transparent elsewhere, WebP,
+  3–4 KB), with the frame's number, or an "empty" message when nothing is to be covered.
+  Sent as soon as the mask is known, with the last fill (as the Mac's own screen does between
+  fills): waiting for the fill made MI-GAN's patches 134 ms late instead of 85.
+- **The room view** (`questXr.ts`). WebXR `immersive-ar` (passthrough) with WebGL2. The page
+  keeps the head's pose for the last few seconds; a patch is drawn as the camera frame's
+  rectangle at a set distance, from where the camera was at (stamp time − camera delay). So it
+  stays put in the room when the head turns; only a moving phone is followed late.
+- **Lining up by hand**, since web pages do not get the camera's position or field of view:
+  field of view, distance, camera delay, which front camera, small tilt corrections; kept on
+  the Quest, printed in the Mac's terminal. B shows the whole camera frame half-transparent
+  over the room to line it up; A shows the settings panel; the thumbstick chooses and changes.
+- **Recovery on a Quest** (`ipad.ts`): while the page is not being drawn (headset off), the
+  watchdogs wait instead of reconnecting and reloading. That was the reload loop of step 1's
+  test. In the room view the page never reloads (it would end the view); patches count as the
+  sign of a live connection there. The iPad's recovery is unchanged.
+- Fixed on the way: the "Headset camera" panel row from step 1 would have shown, empty, on the
+  iPad too (no style for a hidden row).
+
+### Checked
+
+- `DEVICE=quest npm run check:stream -- captures/clip_moving.y4m`, now with a pretend headset
+  (a minimal fake WebXR injected into the test page): room view on, ~110–140 patches placed in
+  4 s (5–6 not placed: from frames taken before the view started), patch delay 86–91 ms, B
+  switches the Mac to whole frames, A shows the panel; `captures/quest_room_view.jpg` shows the
+  patch over the phone, upright, with the right eye's patch shifted the right way. All the
+  interruptions recover as on the iPad. No console errors.
+- The pretend headset found one real bug: on first entry the page asked the graphics context to
+  become headset-compatible a second time, which waits forever where there is no headset.
+- `npm run check:stream` (as the iPad): unchanged (68 ms round trip; recovery 0.3–4.8 s).
+- Typecheck and production build pass.
+- Once, a check aborted at the start because the Mac's test page never loaded (no report from
+  it at all); the rerun passed. Not reproduced.
+
+Not verified: anything in the real headset. Open questions there: whether Quest Browser has the
+breakout box; whether the camera keeps delivering in the room view; the real patch delay over
+Wi-Fi; how far off the default settings are (field of view 80°, distance 1.8 m, camera delay
+45 ms, left camera).
+
+## 2026-11-20 · room view on the real Quest, and the extra cover
+
+### Tried
+
+The room view started on the real Quest (Quest Browser 157, ZHdK Wi-Fi): 90 Hz, patches
+flowing (the breakout box exists there: frame numbers "from the camera frames"), whole frame
+and settings panel working. Patch delay (frame stamped → patch arrived) 140–180 ms median, about
+double the 85–90 ms with both pages on this Mac; the Mac held incoming frames 30–36 ms. Lined up
+at field of view 84°, up / down −8.5°, left / right −6°, camera "left", distance 1.8 m, camera
+delay 45 ms.
+
+The user's verdict: it does not line up perfectly. Their proposal, as a design choice: cover a
+larger area, which hides what the lining up misses and the delay; the fill is not accurate
+anyway, so a larger inaccurate area matters little.
+
+Also seen in the log: while the headset was off, the Mac kept sending patches for the last
+frame it had, and the delay statistics grew to minutes. Repeats of the same frame are now left
+out (both in the page's numbers and in the room view, which only takes strictly newer frames).
+
+### The extra cover (`patches.ts`, `questXr.ts`)
+
+- Around the fill, each patch gets a border of the picture around the phone (with the phone
+  already replaced by the fill, so its dark colour does not smear outwards), blurred by half the
+  border's width, cut to the mask grown by the border's width (stamped 16 times around a
+  circle) with a soft edge. The fill is drawn sharp on top.
+- Its width is a new setting on the Quest's panel, "extra cover", in centimetres at the set
+  distance (8 cm at first); the Quest turns it into frame pixels with the field of view and
+  sends it with its patch mode.
+- First version blurred and encoded the whole 640×480 frame: 35 ms per patch, a third of the
+  frames skipped, delay 120 ms. Now only the part around the phones (plus the border) is drawn,
+  blurred and sent, with its place in the frame in the header: 15–18 ms, none skipped, delay
+  93–94 ms (here, without Wi-Fi), 7–8 KB per patch.
+
+### Checked
+
+- `DEVICE=quest npm run check:stream -- captures/clip_moving.y4m` (with interruptions): room
+  view on, 104–116 patches in 4 s, none skipped, the border visible and in place in
+  `captures/quest_room_view.jpg`; no console errors.
+
+Not verified: how the extra cover looks in the headset, and which width hides the edges.

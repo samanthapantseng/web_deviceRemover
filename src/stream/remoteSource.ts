@@ -8,6 +8,7 @@
 import { fit, frameWaiter, type FrameSource } from '../camera';
 import { report, reporting } from '../devReport';
 import { LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
+import { PATCH_CHANNEL, PatchServer } from './patches';
 import { serveShots, SHOT_CHANNEL } from './shots';
 import { Signal, type SignalMessage } from './signal';
 
@@ -26,6 +27,8 @@ export interface RemoteSource extends FrameSource {
    * mirrored if `mirror` (the iPad shows the picture mirrored). See shots.ts.
    */
   onScreenshot(make: (mirror: boolean) => Promise<Blob>): void;
+  /** A Quest in its immersive view: the patches it gets instead of the picture (patches.ts). */
+  readonly patches: PatchServer;
 }
 
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
@@ -93,6 +96,7 @@ export async function openRemote(say: Say): Promise<RemoteSource> {
   let lastFrameAt = 0;
   let restartAskedAt = 0;
   let makeShot: ((mirror: boolean) => Promise<Blob>) | null = null;
+  const patches = new PatchServer();
   const shot = (mirror: boolean) => {
     report('status', { text: 'screenshot asked for by the iPad' });
     return makeShot ? makeShot(mirror) : Promise.reject(new Error('the detector is still loading'));
@@ -145,7 +149,13 @@ export async function openRemote(say: Say): Promise<RemoteSource> {
     };
     // The iPad's screenshot requests (an iPad page from before this channel existed has none).
     p.ondatachannel = (e) => {
-      if (pc === p && e.channel.label === SHOT_CHANNEL) serveShots(e.channel, shot);
+      if (pc !== p) return;
+      if (e.channel.label === SHOT_CHANNEL) serveShots(e.channel, shot);
+      // A Quest's patches (pages from before this channel existed, and the iPad, have none).
+      else if (e.channel.label === PATCH_CHANNEL) {
+        patches.senderWidth = o.width;
+        patches.attach(e.channel);
+      }
     };
     await p.setRemoteDescription({ type: 'offer', sdp: o.sdp });
     const t = p.getTransceivers().find((x) => x.receiver.track.kind === 'video');
@@ -209,7 +219,7 @@ export async function openRemote(say: Say): Promise<RemoteSource> {
     void m.read().then((s) => {
       if (m !== meter) return;
       stats = s;
-      if (reporting && tick++ % 5 === 0) report('link', { role: 'mac', ...s, connections });
+      if (reporting && tick++ % 5 === 0) report('link', { role: 'mac', ...s, connections, ...(patches.active ? { patches: { ...patches.stats } } : {}) });
     });
   }, 1000);
 
@@ -229,6 +239,7 @@ export async function openRemote(say: Say): Promise<RemoteSource> {
       link: () => stats,
       connections: () => connections,
       sending: () => !!outTrack,
+      patches: () => ({ ...patches.stats, active: patches.active }),
       /** Drop the connection without telling the iPad, as a dead network would. */
       dropLink: () => {
         pc?.close();
@@ -267,6 +278,7 @@ export async function openRemote(say: Say): Promise<RemoteSource> {
         onScreenshot: (make) => {
           makeShot = make;
         },
+        patches,
       });
     };
     video.addEventListener('loadedmetadata', onSize);

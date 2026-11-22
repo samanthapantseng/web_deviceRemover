@@ -5,6 +5,7 @@ import type { Effect, PickedPhone } from './effects/types';
 import { AlphaCanvas } from './mask/alphaCanvas';
 import { MaskStabilizer, type StableMask } from './mask/stabilizer';
 import type { Settings } from './settings';
+import type { DoneFrame } from './stream/patches';
 import { makeCanvas, type CanvasPair, type Rect } from './types';
 
 export interface PipelineStats {
@@ -54,6 +55,8 @@ export class Pipeline {
   };
   /** Set to see the context window in the mask overlay. */
   debugRect: () => Rect | null = () => null;
+  /** Called for each processed frame once its mask is known (streaming to a Quest: its patches, see stream/patches.ts). */
+  onFrameDone: ((f: DoneFrame) => void) | null = null;
   /** Watches each phone-like object before deciding to erase it. */
   readonly tracker = new PhoneTracker();
 
@@ -177,6 +180,17 @@ export class Pipeline {
       settings: s,
     };
     effect.onMask(f);
+    // Sent before the fill: the new mask over the last fill, as the Mac's own screen shows it
+    // between fills. Waiting for the fill would make the patch later by the fill's time.
+    this.onFrameDone?.({
+      frame: frame.canvas,
+      width,
+      height,
+      present: mask.present,
+      roi: mask.present ? mask.roi : null,
+      maskCanvas: this.alphaCanvas.canvas,
+      drawEffect: (ctx) => effect.render(ctx, true),
+    });
     const t1 = performance.now();
     await effect.process(f);
     const effectMs = mask.present ? performance.now() - t1 : 0;

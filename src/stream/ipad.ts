@@ -6,11 +6,18 @@
  * This page drives recovery. It starts a fresh connection whenever the Mac page appears, the
  * connection fails, or no frame has arrived for 3 s, and keeps trying for as long as it is open.
  *
- *   ?camera=front|back   which camera (default: the saved choice, front at first)
+ * It also runs in Quest Browser on a Meta Quest 3, with the headset's passthrough camera
+ * ("headset", the default there) instead of the iPad's. There, "Enter the room view" switches
+ * to the immersive view (questXr.ts): the room is the headset's own passthrough, and only what
+ * covers the phones comes from the Mac (patches.ts). Every camera frame is numbered there, so
+ * each patch can be put where the camera was looking when it took that frame.
+ *
+ *   ?camera=front|back|headset   which camera (default: the saved choice; at first front, on a Quest headset)
  *   ?latency             measure the round trip with a frame counter in the corner (test only)
  *   ?codec=h264|vp8|any  video codec for both directions (default h264); the Mac follows
  *   ?buffer=default      leave the browser's own jitter buffer (default: as small as possible)
  *   ?recordMax=<s>       a screen recording stops by itself after this long (default 300 s)
+ *   ?patches             ask the Mac for patches without the room view (headless tests only)
  */
 import '../style.css';
 import './stream.css';
@@ -19,6 +26,8 @@ import { downloadBlob, timestamp } from '../snapshot';
 import { isTouchDevice } from '../ui/panel';
 import { codecFromUrl, describeLink, LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
 import { Stamper, StampReader } from './latency';
+import { PATCH_CHANNEL, PATCH_CHANNEL_INIT, PatchClient, type Patch } from './patches';
+import { QuestView, roomViewSupported } from './questXr';
 import { ScreenRecorder } from '../recorder';
 import { keepScreenOn, toggleFullscreen } from './screen';
 import { SHOT_CHANNEL, ShotClient } from './shots';
@@ -29,9 +38,14 @@ keepScreenOn();
 
 // ---------------------------------------------------------------- settings (this page only)
 
-type Facing = 'front' | 'back';
+/** Quest Browser on a Meta Quest headset. */
+const isQuest = /OculusBrowser|Quest/.test(navigator.userAgent);
+
+type Facing = 'front' | 'back' | 'headset';
 interface Prefs {
   camera: Facing;
+  /** On a Quest: which of its cameras (a deviceId), if one was picked in the panel. */
+  headsetCamera?: string;
   /** Mirror the picture, like a mirror. On by default for the front camera. */
   mirror: boolean;
   /** Fill the screen (crops the edges) instead of letterboxing. */
@@ -40,7 +54,8 @@ interface Prefs {
 const PREFS_KEY = 'device-remover.stream.v1';
 
 function loadPrefs(): Prefs {
-  const defaults: Prefs = { camera: 'front', mirror: true, cover: true };
+  // A headset camera looks out at the room, so it is not mirrored.
+  const defaults: Prefs = isQuest ? { camera: 'headset', mirror: false, cover: true } : { camera: 'front', mirror: true, cover: true };
   try {
     return { ...defaults, ...(JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}') as Partial<Prefs>) };
   } catch {
@@ -59,7 +74,7 @@ function savePrefs(): void {
 const params = new URLSearchParams(location.search);
 const prefs = loadPrefs();
 const camParam = params.get('camera');
-if (camParam === 'front' || camParam === 'back') prefs.camera = camParam;
+if (camParam === 'front' || camParam === 'back' || camParam === 'headset') prefs.camera = camParam;
 const latencyMode = params.has('latency');
 const codec = codecFromUrl();
 
@@ -109,6 +124,79 @@ function releasePicture(): void {
  * Photos, or AirDrop it to the Mac); elsewhere, or with no share sheet, it downloads.
  */
 const shots = new ShotClient();
+
+// ---------------------------------------------------------------- Quest: the room view
+
+/** Patches from the Mac (Quest only): what covers the phones, per camera frame. */
+const patchClient = new PatchClient();
+const patchDelays: number[] = [];
+let patchesReceived = 0;
+let patchesWithImage = 0;
+/**
+ * When the page was last drawn (2D or room view). A Quest stops drawing when it is taken off
+ * (and pauses its cameras): the recovery below then waits instead of reconnecting and reloading.
+ */
+let lastRenderAt = performance.now();
+const rendering = () => performance.now() - lastRenderAt < 1500;
+{
+  const beat = () => {
+    lastRenderAt = performance.now();
+    requestAnimationFrame(beat);
+  };
+  requestAnimationFrame(beat);
+}
+const questView = new QuestView({
+  sentTime: (id) => stamper?.sentTime(id) ?? 0,
+  setFull: (full) => patchClient.setFull(full),
+  setMargin: (px) => patchClient.setMargin(px),
+  onRender: () => {
+    lastRenderAt = performance.now();
+  },
+  onEnd: () => {
+    patchClient.setOn(params.has('patches'));
+    enterButton.classList.remove('gone');
+  },
+});
+let lastPatchId = -1;
+patchClient.onPatch = (p: Patch) => {
+  patchesReceived++;
+  if (p.image) patchesWithImage++;
+  const sent = p.id >= 0 ? (stamper?.sentTime(p.id) ?? 0) : 0;
+  // The Mac repeats its last frame while none come in (headset off): not a new delay.
+  const repeat = p.id === lastPatchId;
+  lastPatchId = p.id;
+  if (sent && !repeat) {
+    patchDelays.push(p.receivedAt - sent);
+    if (patchDelays.length > 90) patchDelays.shift();
+  }
+  // In the room view the 2D picture is not drawn: the patches are the sign of a live link.
+  if (questView.active) countFrame();
+  questView.onPatch(p);
+};
+const patchDelay = () => {
+  const d = [...patchDelays].sort((a, b) => a - b);
+  return d.length ? d[Math.floor(d.length / 2)] : null;
+};
+if (isQuest && params.has('patches')) patchClient.setOn(true);
+
+const enterButton = el('button', 'btn enter-xr gone', 'Enter the room view');
+async function enterRoomView(): Promise<void> {
+  if (questView.active) return;
+  if (!stamper) {
+    note('the camera is not running yet');
+    return;
+  }
+  try {
+    await questView.enter();
+    patchClient.setOn(true);
+    enterButton.classList.add('gone');
+  } catch (err) {
+    report('status', { text: `room view could not start: ${(err as Error).message}`, isError: true });
+    note(`room view could not start: ${(err as Error).message}`);
+  }
+}
+enterButton.onclick = () => void enterRoomView();
+if (isQuest) void roomViewSupported().then((ok) => ok && enterButton.classList.remove('gone'));
 
 /** Safari opens the share sheet only shortly after a tap. If the picture took longer, this button asks for one more tap. */
 const saveButton = el('button', 'btn save-shot gone', 'Screenshot ready · tap to save');
@@ -240,13 +328,14 @@ const togglePanel = () => panel.classList.toggle('hidden');
 /** A short white flash over the picture when a screenshot is taken. */
 const flash = el('div');
 flash.id = 'shot-flash';
-document.body.append(flash, saveButton, recIndicator);
+document.body.append(flash, saveButton, recIndicator, enterButton);
 function addAction(label: string, run: () => void): HTMLButtonElement {
   const b = el('button', 'btn', label);
   b.onclick = run;
   actions.append(b);
   return b;
 }
+if (isQuest) addAction('Room view', () => void enterRoomView());
 addAction('Screenshot', () => void screenshot());
 const recordButton = addAction('Record', toggleRecording);
 /** In case the download did not happen: the last recording stays until the next one starts. */
@@ -260,7 +349,7 @@ addAction('Close', togglePanel);
   const head = el('div', 'row-head');
   head.append(el('span', undefined, 'Camera (reloads)'));
   const select = el('select');
-  for (const f of ['front', 'back'] as const) {
+  for (const f of isQuest || prefs.camera === 'headset' ? (['headset', 'front', 'back'] as const) : (['front', 'back'] as const)) {
     const o = el('option', undefined, f);
     o.value = f;
     select.append(o);
@@ -270,12 +359,30 @@ addAction('Close', togglePanel);
     prefs.camera = select.value as Facing;
     prefs.mirror = prefs.camera === 'front';
     savePrefs();
-    const p = new URLSearchParams(location.search);
-    p.delete('camera');
-    location.search = p.toString();
+    reloadWithoutCameraParam();
   };
   row.append(head, select);
   panel.append(row);
+}
+/** On a Quest: every camera Quest Browser lists, to pick another one if the automatic choice is wrong. */
+const headsetRow = el('label', 'row gone');
+const headsetSelect = el('select');
+{
+  const head = el('div', 'row-head');
+  head.append(el('span', undefined, 'Headset camera (reloads)'));
+  headsetSelect.onchange = () => {
+    prefs.headsetCamera = headsetSelect.value || undefined;
+    savePrefs();
+    reloadWithoutCameraParam();
+  };
+  headsetRow.append(head, headsetSelect);
+  panel.append(headsetRow);
+}
+
+function reloadWithoutCameraParam(): void {
+  const p = new URLSearchParams(location.search);
+  p.delete('camera');
+  location.search = p.toString();
 }
 for (const [key, label] of [
   ['mirror', 'Mirror'],
@@ -293,12 +400,23 @@ for (const [key, label] of [
   row.append(input, el('span', undefined, label));
   panel.append(row);
 }
-panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · S screenshot · V record · F fullscreen · R reconnect'));
+panel.append(
+  el(
+    'div',
+    'keys',
+    isQuest
+      ? 'Click the picture twice quickly (trigger or pinch) to show or hide this panel.'
+      : isTouchDevice
+        ? 'Double-tap the picture to show or hide this panel.'
+        : 'D panel · S screenshot · V record · F fullscreen · R reconnect',
+  ),
+);
 document.body.append(panel);
 
 let lastTap = 0;
 document.addEventListener('pointerup', (e) => {
-  if (e.pointerType === 'mouse' || panel.contains(e.target as Node)) return;
+  // A Quest's controllers may count as a mouse; there they are the only way to reach the panel.
+  if ((e.pointerType === 'mouse' && !isQuest) || panel.contains(e.target as Node)) return;
   if (e.timeStamp - lastTap < 350) {
     togglePanel();
     lastTap = 0;
@@ -379,6 +497,8 @@ async function connect(reason: string): Promise<void> {
   transceiver = t;
   // The screenshot's way back from the Mac, on the same connection.
   shots.attach(p.createDataChannel(SHOT_CHANNEL));
+  // A Quest's patches for the room view (patches.ts), on the same connection.
+  if (isQuest) patchClient.attach(p.createDataChannel(PATCH_CHANNEL, PATCH_CHANNEL_INIT));
   notes = `${preferCodec(t, codec)} · ${lowLatency(t.receiver)}`;
   p.ontrack = (e) => {
     if (pc !== p) return;
@@ -426,12 +546,15 @@ async function onMessage(msg: SignalMessage): Promise<void> {
     if (msg.sending && !macSending) sendingSince = performance.now();
     macSending = msg.sending;
   } else if (msg.type === 'restart') {
+    // A Quest that is not being worn sends nothing; it starts again by itself when put on.
+    if (isQuest && !rendering()) return;
     // The Mac gets nothing from us. A new connection usually fixes it; if it keeps happening,
     // something on this side is stuck (in tests: the video encoder), and only a reload helps.
     const now = performance.now();
     macRestarts = now - lastMacRestartAt < 30_000 ? macRestarts + 1 : 1;
     lastMacRestartAt = now;
-    if (macRestarts >= 3) {
+    // A reload would end the room view: only a new connection there.
+    if (macRestarts >= 3 && !questView.active) {
       report('status', { text: `the Mac got no frames ${macRestarts} times in a row, reloading this page` });
       location.reload();
       return;
@@ -448,6 +571,12 @@ const healthy = () => framesThisLink > 0 && performance.now() - lastFrameAt < 15
 // Watchdog: decides when to start over. Checked twice a second.
 setInterval(() => {
   const now = performance.now();
+  // A Quest that is not being worn (or whose Browser is out of sight) draws nothing and its
+  // camera pauses: nothing to repair. Everything resumes when it is put on again.
+  if (isQuest && !rendering()) {
+    cameraFrameAt = now;
+    return;
+  }
   // A second without frames: keep the last picture in the freeze canvas, so it stays on screen
   // whatever the video element does when its stream ends. The indicator only after 3 s.
   if (lastFrameAt > 0 && now - lastFrameAt > 1000) holdPicture();
@@ -480,6 +609,19 @@ setInterval(() => {
   const since = framesThisLink ? lastFrameAt : Math.max(sendingSince, connectedAt);
   if (now - since > 3000) retry('no frames for 3 s');
 }, 500);
+
+/** A frame (or, in the room view, a patch) arrived on the current connection. */
+function countFrame(): void {
+  const now = performance.now();
+  lastFrameAt = now;
+  releasePicture();
+  if (!framesThisLink++) {
+    linkFirstFrameAt = now;
+    failures = 0;
+    say('');
+    report('status', { text: `${questView.active ? 'patches' : 'picture'} from the Mac (#${connections}), ${Math.round(now - startedAt)} ms after connecting` });
+  }
+}
 
 // Every received frame.
 function onFrame(): void {
@@ -533,7 +675,8 @@ function statsText(): string {
     `picture   ${shownFps.toFixed(0)} fps · last frame ${age}`,
     describeLink(stats),
     `latency   ${lat ? `median ${lat.median.toFixed(0)} ms · p95 ${lat.p95.toFixed(0)} ms (${lat.n})` : latencyMode ? 'measuring…' : '– (open with ?latency)'}`,
-    `camera    ${prefs.camera} · sending ${width}×${height}${latencyMode ? ' with frame counter' : ''}`,
+    `camera    ${prefs.camera} · sending ${width}×${height}${stamper ? ` with frame counter (${stamper.method})` : ''}`,
+    ...(isQuest ? [`patches   ${patchesReceived} (${patchesWithImage} with an image) · delay ${patchDelay()?.toFixed(0) ?? '–'} ms · room view ${questView.active ? 'on' : 'off'}`] : []),
     `Mac       ${signal?.peerPresent ? (macSending ? 'sending' : answered ? 'loading the detector…' : 'connecting…') : 'page not open'}`,
     `link #${connections} · ${notes}`,
   ].join('\n');
@@ -551,7 +694,10 @@ setInterval(() => {
     if (!panel.classList.contains('hidden')) statsBox.textContent = statsText();
     if (reporting && tick++ % 5 === 0) {
       const lat = reader?.summary();
-      report('link', { role: 'ipad', ...s, shownFps, latencyMs: lat?.median, latencyP95: lat?.p95, latencyN: lat?.n, connections });
+      const quest = isQuest
+        ? { roomView: questView.active, patches: patchesReceived, patchDelayMs: patchDelay(), xrFps: questView.active ? questView.stats.fps : undefined }
+        : {};
+      report('link', { role: 'ipad', ...s, shownFps, latencyMs: lat?.median, latencyP95: lat?.p95, latencyN: lat?.n, connections, ...quest });
     }
   });
 }, 1000);
@@ -575,7 +721,70 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') cameraFrameAt = performance.now();
 });
 
+/** Not a passthrough camera: the Quest's avatar ("virtual") camera, shown when "Headset cameras" is not allowed. */
+const NOT_HEADSET = /avatar|virtual|persona/i;
+/** Thrown when Quest Browser lists no passthrough camera, only the avatar camera. */
+class NoHeadsetCamera extends Error {}
+let camerasReported = false;
+
+async function listCameras(): Promise<MediaDeviceInfo[]> {
+  return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+}
+
+function cameraFacing(d: MediaDeviceInfo): string[] {
+  const caps = (d as InputDeviceInfo).getCapabilities?.() as MediaTrackCapabilities | undefined;
+  return caps?.facingMode ?? [];
+}
+
+function describeCamera(d: MediaDeviceInfo): string {
+  const caps = (d as InputDeviceInfo).getCapabilities?.() as MediaTrackCapabilities | undefined;
+  const size = caps?.width?.max && caps?.height?.max ? `up to ${caps.width.max}×${caps.height.max}` : 'size ?';
+  return `"${d.label || '(no name)'}" (${cameraFacing(d).join('/') || 'facing ?'}, ${size})`;
+}
+
+/**
+ * A Quest's passthrough camera. Quest Browser lists the two front cameras only once the site may
+ * use "Headset cameras" (a permission of its own, apart from the avatar camera); until then the
+ * only camera is the avatar one. Picks the one chosen in the panel, else an outward-facing one,
+ * the left first. The list goes to the Mac's terminal, since the cameras' names are not documented.
+ */
+async function openHeadsetCamera(): Promise<MediaStream> {
+  let cams = await listCameras();
+  // Names are listed only once the page may use a camera: ask once, then look again.
+  if (!cams.some((d) => d.label)) {
+    const probe = await navigator.mediaDevices.getUserMedia({ video: true });
+    probe.getTracks().forEach((t) => t.stop());
+    cams = await listCameras();
+  }
+  if (!camerasReported) {
+    camerasReported = true;
+    report('status', { text: `cameras: ${cams.map(describeCamera).join(' · ') || 'none'}` });
+  }
+  headsetSelect.replaceChildren(
+    el('option', undefined, 'automatic'),
+    ...cams.map((d, i) => {
+      const o = el('option', undefined, d.label || `camera ${i + 1}`);
+      o.value = d.deviceId;
+      return o;
+    }),
+  );
+  (headsetSelect.firstChild as HTMLOptionElement).value = '';
+  headsetRow.classList.remove('gone');
+
+  const chosen = cams.find((d) => d.deviceId === prefs.headsetCamera);
+  const rank = (d: MediaDeviceInfo) => (cameraFacing(d).includes('environment') ? 0 : 2) + (/left/i.test(d.label) ? 0 : 1);
+  const pick = chosen ?? cams.filter((d) => !NOT_HEADSET.test(d.label)).sort((a, b) => rank(a) - rank(b))[0];
+  if (!pick) throw new NoHeadsetCamera(`only ${cams.map(describeCamera).join(', ') || 'no camera'}`);
+  headsetSelect.value = chosen ? chosen.deviceId : '';
+  report('status', { text: `headset camera${chosen ? ' (picked in the panel)' : ''}: ${describeCamera(pick)}` });
+  return navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { deviceId: { exact: pick.deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+  });
+}
+
 function openCamera(): Promise<MediaStream> {
+  if (prefs.camera === 'headset') return openHeadsetCamera();
   return navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
@@ -599,7 +808,7 @@ function useCamera(stream: MediaStream): void {
  */
 async function restartCamera(reason = 'the camera stopped delivering frames'): Promise<void> {
   if (restartingCamera || stopped || !local) return;
-  if (cameraRestarts >= 3) {
+  if (cameraRestarts >= 3 && !questView.active) {
     report('status', { text: `${reason}; three camera restarts did not help, reloading the page` });
     location.reload();
     return;
@@ -614,6 +823,7 @@ async function restartCamera(reason = 'the camera stopped delivering frames'): P
     local.srcObject = cam;
     await local.play();
     cameraFrameAt = performance.now();
+    if (stamper && camTrack) stamper.setCamera(camTrack);
     if (!stamper && camTrack) {
       // The latency test keeps sending its canvas, which now draws the new camera.
       sendTrack = camTrack;
@@ -622,7 +832,7 @@ async function restartCamera(reason = 'the camera stopped delivering frames'): P
     }
   } catch (err) {
     console.error('[stream] could not restart the camera, reloading', err);
-    setTimeout(() => location.reload(), 1000);
+    if (!questView.active) setTimeout(() => location.reload(), 1000);
   } finally {
     restartingCamera = false;
   }
@@ -640,7 +850,14 @@ async function main(): Promise<void> {
     useCamera(await openCamera());
   } catch (err) {
     const denied = err instanceof DOMException && err.name === 'NotAllowedError';
-    say(denied ? 'Camera access was blocked. Allow it for this page and reload.' : `Camera error: ${(err as Error).message}`, true);
+    say(
+      err instanceof NoHeadsetCamera
+        ? `Only the avatar camera is available (${err.message}). Allow "Headset cameras" for Browser in the Quest's settings, then reload.`
+        : denied
+          ? 'Camera access was blocked. Allow it for this page and reload.'
+          : `Camera error: ${(err as Error).message}`,
+      true,
+    );
     return;
   }
 
@@ -663,8 +880,19 @@ async function main(): Promise<void> {
   cameraFrameAt = performance.now();
   local = v;
 
-  stamper = latencyMode ? new Stamper(v) : null;
-  reader = stamper ? new StampReader(stamper) : null;
+  // On a Quest every frame is numbered, for the room view (and the round trip is measured too).
+  stamper = latencyMode || isQuest ? new Stamper(v, isQuest ? camTrack! : undefined) : null;
+  reader = stamper && latencyMode ? new StampReader(stamper) : null;
+  if (stamper?.method === 'frames') {
+    // Taken straight from the camera: also the sign that the camera delivers, in the room view
+    // too, where the video element above is not drawn.
+    stamper.onFrame = () => {
+      cameraFrameAt = performance.now();
+      cameraRestarts = 0;
+    };
+    cameraWatch = true;
+  }
+  if (stamper) report('status', { text: `frame numbers: ${stamper.method === 'frames' ? 'from the camera frames' : 'canvas'}` });
   sendTrack = stamper ? stamper.track : camTrack!;
   sendStream = new MediaStream([sendTrack]);
   frameSize = () => (stamper ? { width: stamper.width, height: stamper.height } : { width: v.videoWidth, height: v.videoHeight });
@@ -705,6 +933,9 @@ async function main(): Promise<void> {
       connections: () => connections,
       stats: () => ({ ...stats, shownFps }),
       latency: () => reader?.summary() ?? null,
+      patches: () => ({ received: patchesReceived, withImage: patchesWithImage, delayMs: patchDelay(), stamping: stamper?.method ?? null }),
+      roomView: () => ({ active: questView.active, ...questView.stats, delays: undefined, patchDelayMs: questView.patchDelay(), settings: questView.describeCalibration() }),
+      exitRoomView: () => questView.exit(),
       unreadable: () => reader?.unreadable ?? 0,
       resetLatency: () => reader?.reset(),
       reconnect: () => connect('test'),

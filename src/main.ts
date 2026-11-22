@@ -138,6 +138,11 @@ async function main(): Promise<void> {
   const effectFor = (mode: ModeId) => (mode === 'grow' ? grow : mode === 'hijack' ? hijack : remove);
   const pipeline = new Pipeline(source, detector, effectFor(settings.mode), settings);
   pipeline.debugRect = () => (pipeline.activeEffect === remove ? remove.rect : null);
+  // A Quest in its immersive view gets only the patches over the phones (stream/patches.ts).
+  if (remote) {
+    const patches = remote.patches;
+    pipeline.onFrameDone = (f) => patches.frame(f);
+  }
   store.onChange((_s, key) => {
     if (key === 'mode') pipeline.setEffect(effectFor(settings.mode));
   });

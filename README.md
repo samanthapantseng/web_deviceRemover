@@ -443,6 +443,140 @@ piece needs no internet. The stream with the Mac's Wi-Fi off has not been tried 
   includes it. It has to be a private address (`10.x`, `172.16.x`–`172.31.x` or `192.168.x`):
   those are the only ones the certificate authority can vouch for.
 
+## Meta Quest 3 (in progress, branch `quest`)
+
+In the Quest, the room stays the headset's own passthrough, which has no delay, and only the
+phones are covered with the Mac's fill: the **room view** (step 2, see below). It starts from
+the stream page in Quest Browser (step 1): the Quest's front camera goes to the Mac, and the
+finished picture comes back into a flat browser window floating in the headset.
+
+**Network.** The Quest and the Mac have to reach each other on the same Wi-Fi. ZHdK's Wi-Fi
+allowed it on 20 Nov: the Quest reached the Mac directly. Elsewhere: at home, a phone's
+hotspot, your own router; the Immersive Arts Space also has a Wi-Fi for VR headsets. The
+Ethernet cable has not been tried with the Quest (see below).
+
+1. **On the Mac**, the same two Terminal windows as for the iPad: `npm run dev:ipad`, then
+   `npm run stream:mac`.
+2. **On the Quest**, in Browser, open the Mac's address with `stream.html`, for example
+   `https://10.21.12.136:8443/stream.html` (step 1 prints the address). The Quest does not
+   trust the certificate: **Advanced → Proceed**. (Installing the certificate on the Quest, as
+   on the iPad, has not been tried.)
+3. **The camera question.** Quest Browser has two kinds of camera: the **avatar camera** (a
+   virtual one, showing your avatar) and the **headset cameras** (the real front cameras, what
+   passthrough shows). Allow **Headset cameras**. If the page says "Only the avatar camera is
+   available", the site has only the avatar camera: allow Headset cameras for Browser in the
+   Quest's settings (reported to be under Settings → Privacy & safety), then reload the page.
+4. The picture comes back into the browser window, phones removed. Terminal window 1 prints
+   `[Quest Browser] status: cameras: …`, every camera Quest Browser lists with its name, and
+   then `headset camera: …`, the one used. Their names are not documented anywhere; the page
+   takes one facing outwards, the left one if there are two.
+5. **The panel**: click the picture twice quickly (trigger or pinch). **Headset camera** there
+   switches to another of the listed cameras, if the automatic choice is wrong.
+6. **The delay**: open the page with `?latency` added
+   (`https://<address>:8443/stream.html?latency`). The round trip shows in the panel and in
+   Terminal window 1 every 30 s.
+
+On a Quest the page uses the headset camera by default and does not mirror it; on the iPad
+nothing changes. `?camera=headset` forces the headset camera elsewhere (only useful for tests).
+
+### The room view (step 2)
+
+In the browser window, below the picture: **Enter the room view** (also in the panel). The
+window disappears, the room is the headset's own passthrough, and after the usual 1.5 s of
+watching, phones are covered with the fill. To leave: the Meta button.
+
+How it works: every camera frame gets a number (the bar code in the corner of the picture the
+Mac gets). For each frame the Mac sends back only what covers the phones, transparent
+elsewhere, with that number (`src/stream/patches.ts`). The Quest remembers where the head was
+over the last seconds and draws the patch where the camera was looking when it took that frame
+(`src/stream/questXr.ts`): it stays put in the room while you turn your head, and only follows
+a moving phone late, by the round trip to the Mac.
+
+**Lining up, once per Quest.** Where exactly the camera looks is not given to web pages, so it
+is set by hand. With the controllers:
+
+| | |
+|---|---|
+| **A** (or X) | settings panel on / off |
+| **B** (or Y) | the whole camera frame, half-transparent over the room, on / off |
+| thumbstick up / down | choose a setting |
+| thumbstick left / right | change it |
+
+1. Press **A** and **B**. The camera's picture now lies over the room, half-transparent.
+2. Look at something with clear edges about 2 m away (a door, a table, a window frame).
+3. **size**: until the picture is as large as the room behind it.
+4. **up / down**, **left / right**: until the edges lie on each other.
+5. **camera**: if the picture stays off to one side by a few centimetres, switch left ↔ right
+   (which front camera Quest Browser gives is not known).
+6. **camera delay**: turn your head steadily left and right. If the picture runs ahead of the
+   room, increase it; if it trails behind, decrease it, until it stays still on the room.
+7. **distance**: how far away the phones will usually be (the person opposite). Patches are
+   drawn at that distance: at the wrong one they sit slightly beside the phone in one eye.
+8. **extra cover**: what lining up cannot fix, and the delay, is covered by a soft border
+   around each patch: the picture around the phone, blurred, fading out at its edge (made on
+   the Mac). In centimetres at the set distance, 8 cm at first; more if phone edges still show
+   beside the patch (when it is off, or when a phone moves), less if the blur is too big.
+9. **B** and **A** again to close.
+
+The values are kept on the Quest, and Terminal window 1 prints them
+(`room view settings: …`) each time they change. The panel's bottom line shows the patch
+delay (from the camera frame to its patch arriving) and the headset's frame rate.
+
+**What to expect.** A phone held still stays covered when you move your head. A moving phone
+is followed late, by about 140–180 ms (measured on the real Quest over ZHdK Wi-Fi): its edge
+can show on the side it moves towards, unless the extra cover is wide enough. Phones near the edge of your view are not covered, since the camera sees less than
+the display. The sound of hijack mode plays on the Mac, not in the headset. Hand tracking
+alone cannot open the settings: they need the controllers.
+
+**Recovery.** While the headset is off your head it draws nothing and its cameras pause; the
+page then waits instead of reconnecting and reloading, and carries on when it is put on again.
+In the room view the page never reloads (that would end it); it reconnects instead.
+
+**The cable, not tried yet.** USB-C Ethernet adapters are reported to work on a Quest 3, but the
+Quest seems to expect a router that hands out addresses (DHCP), and I found no setting on it
+for a fixed address. So the iPad's setup (fixed addresses, no router) probably does not work
+for the Quest as it is.
+
+**Tested on this Mac** (`DEVICE=quest npm run check:stream -- captures/clip_moving.y4m`: the
+stream page with a Quest's user agent, a video file as its only camera, and a pretend headset
+for the room view):
+
+- The page takes the headset path; the round trip of the picture is the same as the iPad's
+  (median 61–85 ms, VP8, no network).
+- Patches: 3–4 KB each, every frame number readable, none skipped. From a frame being stamped
+  to its patch arriving: median 82–93 ms with any fill (the patch is sent as soon as the mask
+  is known, with the last fill, as the Mac's own screen shows it). With the extra cover
+  (8 cm, 17 px here): 7–8 KB, about 93 ms, none skipped; only the part around the phone is
+  drawn, blurred and sent.
+- Room view on the pretend headset: patches placed and drawn where the phone is, upright;
+  whole frame (B) and settings panel (A) shown; B switches the Mac to whole frames. Picture:
+  `captures/quest_room_view.jpg`.
+- Interruptions as for the iPad (reload, dead connection, camera restart, Mac reloaded or
+  closed): the same recovery times.
+
+**Tried on the real Quest** (20 Nov, ZHdK Wi-Fi): the room view starts, runs at 90 Hz, and
+patches arrive about 140–180 ms after their camera frame. Lined up at field of view 84°, up /
+down −8.5°, left / right −6° (the camera looks noticeably down and to the side). It did not
+line up perfectly, which led to the extra cover; the extra cover itself has not been tried in
+the headset yet.
+
+**Tried on the real Quest 3** (20 Nov, Quest Browser 157, ZHdK Wi-Fi):
+
+- It works: the picture comes back into the browser window, phones removed.
+- Quest Browser lists three cameras: `camera 0, facing front` (up to 1600×1200, presumably the
+  avatar camera), and `camera 1` and `camera 2`, both `facing back` (up to 1728×1728), the two
+  front cameras of the headset. The page used `camera 2`. Which of the two is the left one is
+  not known yet: cover one of the headset's front cameras with a finger and see whether the
+  picture goes dark.
+- Connection: direct, H.264, 30 fps both ways, network round trip 7–17 ms. The browsers held
+  frames before showing them for about 80–105 ms on the Quest and 30–47 ms on the Mac. The
+  full round trip (`?latency`) was not measured.
+- Steady for two stretches (about 50 s and 1 min 45 s). In between, many reconnects and page
+  reloads: the Quest's page stopped showing frames although they kept arriving, and its camera
+  stopped sending. Most likely while the headset was off your head (its display and cameras
+  pause) or the Browser window was out of sight; not a fault of the connection. The page's
+  recovery, made for the iPad, takes that pause for a broken connection.
+
 ## Exporting the YOLO model by hand
 
 `npm run models` does this for you. The equivalent manual steps:
@@ -797,7 +931,9 @@ src/
   stream/            streaming mode: ipad.ts (the iPad's page), remoteSource.ts (the Mac's
                      side), link.ts (WebRTC set-up, statistics), signal.ts, latency.ts,
                      shots.ts (the iPad's before/after screenshot, made on the Mac),
-                     screen.ts (fullscreen and keeping the iPad awake)
+                     screen.ts (fullscreen and keeping the iPad awake), patches.ts (the
+                     Quest's room view: only what covers the phones, per frame), questXr.ts
+                     (the room view itself: WebXR, head history, lining-up panel)
   recorder.ts        screen recording of the "after" picture (Mac page and iPad stream page)
 server/
   signalHub.ts       streaming mode: introduces the two pages to each other (dev server only)
