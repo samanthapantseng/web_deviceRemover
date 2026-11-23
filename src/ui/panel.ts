@@ -73,7 +73,6 @@ export class DebugPanel {
     this.slider('hijackWatchMs', 'Hijack: watch a new phone for', 0, 3000, 250, (v) => (v ? `${(v / 1000).toFixed(2)} s` : 'no wait'));
     this.slider('hijackHoldMs', 'Hijack: keep sound when phone lost', 0, 6000, 250, (v) => `${(v / 1000).toFixed(2)} s`);
     this.slider('hijackBuildSeconds', 'Hijack: holding time to most intimate', 5, 120, 5, (v) => `${v} s`);
-    this.checkbox('hijackOverlay', 'Hijack: show focus zone and ring');
     this.select('fill', 'Fill mode', FILL_ORDER, (v) => FILL_LABELS[v]);
     this.select('style', 'Stylised variant', STYLE_ORDER, (v) => v);
     this.slider('confidence', 'Confidence threshold', 0.05, 0.9, 0.01, (v) => v.toFixed(2));

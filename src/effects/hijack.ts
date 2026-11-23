@@ -35,8 +35,6 @@ const SWITCH_MARGIN = 0.25;
 const SWITCH_MS = 600;
 /** …and not sooner than this (ms) after the last switch. */
 const MIN_FOCUS_MS = 1500;
-/** The ring fades in and out over about this long (ms). */
-const RING_FADE_MS = 400;
 
 interface Person {
   scene: SceneId;
@@ -65,10 +63,6 @@ export class HijackEffect implements Effect {
   private motion = new Map<number, { x: number; y: number; t: number; activity: number }>();
   private settings: Settings | null = null;
   private volume = -1;
-  /** Where the ring is drawn (smoothed towards the focused phone) and how visible it is. */
-  private ring = { x: 0, y: 0, r: 0, alpha: 0, target: false };
-  private ringGoal = { x: 0, y: 0, r: 0 };
-  private lastRender = 0;
 
   constructor(
     private width: number,
@@ -94,8 +88,6 @@ export class HijackEffect implements Effect {
     this.volume = -1;
     this.focus = null;
     this.challenger = null;
-    this.ring.alpha = 0;
-    this.ring.target = false;
     this.sound.release();
   }
 
@@ -158,56 +150,12 @@ export class HijackEffect implements Effect {
         e.focus(key, scene, person.seed, this.focus.params, (now - person.zero) / 1000);
       } else e.update(this.focus.params);
     }
-
-    // Where to draw the ring: around the phone in focus, where it was last seen.
-    const ringOn = this.focus && measured.find((m) => m.phone.id === this.focus!.id);
-    if (ringOn) {
-      const p = ringOn.phone;
-      const r = 0.55 * Math.hypot(p.x2 - p.x1, p.y2 - p.y1);
-      const x = (p.x1 + p.x2) / 2;
-      const y = (p.y1 + p.y2) / 2;
-      if (!this.ring.target || this.ring.alpha === 0) Object.assign(this.ring, { x, y, r });
-      this.ringGoal = { x, y, r };
-    }
-    this.ring.target = !!this.focus;
   }
 
   async process(): Promise<void> {}
 
-  render(ctx: CanvasRenderingContext2D, still = false): void {
-    const s = this.settings;
-    const now = performance.now();
-    const dt = Math.min(100, now - this.lastRender);
-    this.lastRender = now;
-    if (!s?.hijackOverlay) return;
-    const W = this.width;
-    const H = this.height;
-    // Focus zone: a faint circle in the centre.
-    ctx.save();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-    ctx.setLineDash([3, 6]);
-    ctx.beginPath();
-    ctx.arc(W / 2, H / 2, (s.hijackZone * Math.min(W, H)) / 2, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    // Ring around the phone being listened to: fades in while tuning in, follows the phone smoothly.
-    const ring = this.ring;
-    if (still) ring.alpha = ring.target ? 1 : 0;
-    else ring.alpha = clamp01(ring.alpha + (ring.target ? 1 : -1) * (dt / RING_FADE_MS));
-    const k = still ? 1 : 1 - Math.exp(-dt / 80);
-    ring.x += (this.ringGoal.x - ring.x) * k;
-    ring.y += (this.ringGoal.y - ring.y) * k;
-    ring.r += (this.ringGoal.r - ring.r) * k;
-    if (ring.alpha > 0) {
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = `rgba(255,255,255,${(0.85 * ring.alpha).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.arc(ring.x, ring.y, Math.max(8, ring.r), 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
+  /** Nothing is drawn: in hijack mode the picture is the camera's, only the sound changes. */
+  render(): void {}
 
   /** The numbers the sound is made from. */
   private paramsFor(m: Measured, s: Settings): VoiceParams {

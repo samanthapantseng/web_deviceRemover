@@ -103,8 +103,8 @@ cable. Set fixed addresses, router empty:
 - **The picture freezes**: the Mac's window must be visible. Otherwise the iPad reconnects by itself;
   its panel also has Reconnect.
 - **It is slow**: plug the Mac in, restart it, close other apps.
-- **Hijack is silent on the iPad**: tap the picture once; check the volume; a phone has to be inside
-  the dashed circle.
+- **Hijack is silent on the iPad**: tap the picture once; check the volume; a phone has to be near
+  the middle of the picture.
 - **Someone else has the picture**: anyone on the same network who opens the stream page takes over.
   Use the cable, with the Mac's Wi-Fi off, or your own network.
 - **Port 8443 is taken**: `npm run dev:ipad -- --port 8444`, then `PORT=8444 npm run stream:mac`, and

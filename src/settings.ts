@@ -106,8 +106,6 @@ export interface Settings {
     hijackHoldMs: number;
     /** Hijack mode: seconds of holding a phone until the conversation is at its most intimate. */
     hijackBuildSeconds: number;
-    /** Hijack mode: draw the focus zone and a ring around the phone being listened to. */
-    hijackOverlay: boolean;
 }
 
 export const DEFAULTS: Settings = {
@@ -143,7 +141,6 @@ export const DEFAULTS: Settings = {
     hijackWatchMs: 500,
     hijackHoldMs: 2000,
     hijackBuildSeconds: 30,
-    hijackOverlay: true,
 };
 
 /**
