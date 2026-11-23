@@ -10,6 +10,7 @@ import { report, reporting } from '../devReport';
 import { LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
 import { MODE_CHANNEL, ModeServer, type ModeControl } from './modeLink';
 import { serveShots, SHOT_CHANNEL } from './shots';
+import { SOUND_CHANNEL, type RemoteSound } from './soundLink';
 import { Signal, type SignalMessage } from './signal';
 
 type Say = (text: string, isError?: boolean) => void;
@@ -66,9 +67,10 @@ async function allowAllAddresses(say: Say): Promise<void> {
 
 /**
  * Resolves once the first frame from the iPad has arrived (its size sets the pipeline's).
- * `modes`: this page's mode, which the iPad's Remove / Grow switch changes (modeLink.ts).
+ * `modes`: this page's mode, which the iPad's Remove / Grow / Hijack switch changes (modeLink.ts).
+ * `sound`: hijack mode's sound, which plays on the iPad (soundLink.ts).
  */
-export async function openRemote(say: Say, modes: ModeControl): Promise<RemoteSource> {
+export async function openRemote(say: Say, modes: ModeControl, sound: RemoteSound): Promise<RemoteSource> {
   await allowAllAddresses(say);
   const modeServer = new ModeServer(modes);
   const video = document.createElement('video');
@@ -148,12 +150,13 @@ export async function openRemote(say: Say, modes: ModeControl): Promise<RemoteSo
         say('');
       }
     };
-    // The iPad's screenshot requests and its mode switch (an iPad page from before one of these
-    // channels existed doesn't open it).
+    // The iPad's screenshot requests, its mode switch and the sound (an iPad page from before one
+    // of these channels existed doesn't open it).
     p.ondatachannel = (e) => {
       if (pc !== p) return;
       if (e.channel.label === SHOT_CHANNEL) serveShots(e.channel, shot);
       else if (e.channel.label === MODE_CHANNEL) modeServer.attach(e.channel);
+      else if (e.channel.label === SOUND_CHANNEL) sound.attach(e.channel);
     };
     await p.setRemoteDescription({ type: 'offer', sdp: o.sdp });
     const t = p.getTransceivers().find((x) => x.receiver.track.kind === 'video');

@@ -26,7 +26,8 @@
 //
 // Every change is a glide (setTargetAtTime), never a jump, so nothing clicks.
 import type { SceneId } from '../settings';
-import { Script, type Side, type Turn } from './scenes';
+import { mulberry32 } from './random';
+import { Script, type Line, type Side, type Turn } from './scenes';
 
 export interface VoiceParams {
   pan: number;
@@ -72,17 +73,6 @@ const glide = ([a, b]: readonly [number, number], c: number) => a * (b / a) ** c
 /** Level by how close the phone is and how far in one is. */
 const loudness = (closeness: number, c: number) => (0.5 + 0.5 * closeness) * (0.5 + 0.5 * c);
 
-/** Small seeded random number generator: the same seed gives the same person the same voices. */
-export function mulberry32(seed: number): () => number {
-  let a = seed | 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 /** Stop a parameter's planned changes at `at`, keeping the value it has then. */
 function hold(p: AudioParam, at: number): void {
   if (typeof p.cancelAndHoldAtTime === 'function') p.cancelAndHoldAtTime(at);
@@ -90,6 +80,8 @@ function hold(p: AudioParam, at: number): void {
 }
 
 export class Conversation {
+  /** The longest it took to make the sound of one line (ms), for the panel: the page stands still that long. */
+  static slowestMs = 0;
   /** When it has faded out and stops (context time); Infinity while it goes on. */
   stopAt = Infinity;
 
@@ -100,7 +92,7 @@ export class Conversation {
   private readonly nodes: AudioNode[] = [];
   private readonly playing = new Set<AudioBufferSourceNode>();
   /** Buffers of turns that come again (a voice note on repeat). */
-  private readonly buffers = new WeakMap<Float32Array<ArrayBuffer>, AudioBuffer>();
+  private readonly buffers = new WeakMap<Line, AudioBuffer>();
   /** When the turn written last ends. */
   private cursor = 0;
   private sealAt = 0;
@@ -246,9 +238,9 @@ export class Conversation {
     this.script = new Script(this.scene, mulberry32(this.seed), mulberry32(this.seed + 1 + (Script.repeats(this.scene) ? 0 : now)), ctx.sampleRate);
     const tape = this.script.tape(this.p.build);
     if (tape) {
-      let pos = elapsed % tape.reduce((s, t) => s + t.gap + t.samples.length / ctx.sampleRate, 0);
+      let pos = elapsed % tape.reduce((s, t) => s + t.gap + t.line.seconds, 0);
       for (let i = 0; ; i = (i + 1) % tape.length) {
-        const seconds = tape[i].samples.length / ctx.sampleRate;
+        const seconds = tape[i].line.seconds;
         if (pos < tape[i].gap + seconds) {
           this.script.seek(i + 1);
           this.cursor = at;
@@ -260,8 +252,8 @@ export class Conversation {
     }
     // Something long enough to be joined midway, said by the one who can be overheard, if possible.
     let turn = this.script.next(this.p.build, this.p.activity);
-    for (let i = 0; i < 6 && (turn.side !== 'near' || turn.samples.length < 1.6 * ctx.sampleRate); i++) turn = this.script.next(this.p.build, this.p.activity);
-    this.play(turn, at, (turn.samples.length / ctx.sampleRate) * (0.15 + 0.35 * this.rng()));
+    for (let i = 0; i < 6 && (turn.side !== 'near' || turn.line.seconds < 1.6); i++) turn = this.script.next(this.p.build, this.p.activity);
+    this.play(turn, at, turn.line.seconds * (0.15 + 0.35 * this.rng()));
   }
 
   private say(turn: Turn): void {
@@ -270,19 +262,22 @@ export class Conversation {
   }
 
   private play(turn: Turn, when: number, offset: number): void {
-    this.source(turn.side, turn.samples, when, offset, turn.gain);
-    if (turn.aside && turn.aside.at > offset) this.source(turn.aside.side, turn.aside.samples, when + turn.aside.at - offset, 0, turn.aside.gain);
+    this.source(turn.side, turn.line, when, offset, turn.gain);
+    if (turn.aside && turn.aside.at > offset) this.source(turn.aside.side, turn.aside.line, when + turn.aside.at - offset, 0, turn.aside.gain);
     // Always forward, whatever the overlap.
-    this.cursor = Math.max(this.cursor + 0.05, when + turn.samples.length / this.ctx.sampleRate - offset);
+    this.cursor = Math.max(this.cursor + 0.05, when + turn.line.seconds - offset);
   }
 
-  private source(side: Side, samples: Float32Array<ArrayBuffer>, when: number, offset: number, loud: number): void {
+  private source(side: Side, line: Line, when: number, offset: number, loud: number): void {
     const { ctx } = this;
-    let buffer = this.buffers.get(samples);
+    let buffer = this.buffers.get(line);
     if (!buffer) {
+      const t0 = performance.now();
+      const samples = line.samples;
       buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
       buffer.copyToChannel(samples, 0);
-      this.buffers.set(samples, buffer);
+      this.buffers.set(line, buffer);
+      Conversation.slowestMs = Math.max(Conversation.slowestMs, performance.now() - t0);
     }
     const src = new AudioBufferSourceNode(ctx, { buffer });
     const g = new GainNode(ctx, { gain: loud });

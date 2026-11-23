@@ -6,21 +6,40 @@
 // pauses); moving the phone makes it more agitated (faster, higher, falling into each other's
 // words).
 import { interject, makeLanguage, speak, STYLE, type Interjection, type Language, type Style } from './babble';
-import { level, synthesise, type Speaker } from './formant';
+import { FRAME_S, level, synthesise, type Speaker } from './formant';
+import { mulberry32 } from './random';
 import type { SceneId } from '../settings';
 
 export type Side = 'near' | 'far';
 
-/** One thing said. */
+/** Something to be said: how long it takes is known, the sound is made when it is first asked for. */
+export class Line {
+  readonly seconds: number;
+  private made: Float32Array<ArrayBuffer> | null = null;
+
+  constructor(
+    frames: number,
+    readonly sampleRate: number,
+    private readonly make: () => Float32Array<ArrayBuffer>,
+  ) {
+    this.seconds = (frames * Math.round(FRAME_S * sampleRate)) / sampleRate;
+  }
+
+  get samples(): Float32Array<ArrayBuffer> {
+    return (this.made ??= this.make());
+  }
+}
+
+/** One turn in a conversation. */
 export interface Turn {
   side: Side;
-  samples: Float32Array<ArrayBuffer>;
+  line: Line;
   /** Pause after the turn before (s); negative: they fall into each other's words. */
   gap: number;
   /** Loudness relative to a normal turn. */
   gain: number;
   /** Said by the other side while this goes on, `at` s into it. */
-  aside?: { side: Side; samples: Float32Array<ArrayBuffer>; at: number; gain: number };
+  aside?: { side: Side; line: Line; at: number; gain: number };
 }
 
 type Rng = () => number;
@@ -177,22 +196,21 @@ export class Script {
     const calm = (1 - 0.14 * intimacy) * (1 + 0.22 * agitation);
     const lively = (1 - 0.25 * intimacy) * (1 + 0.4 * agitation);
     const gap = between(this.rng, ...say.gap);
-    const samples = this.voice(say, calm, lively, intimacy);
+    const line = this.voice(say, calm, lively, intimacy);
     const turn: Turn = {
       side: say.side,
-      samples,
+      line,
       gap: gap > 0 ? gap * (1 + 0.8 * intimacy) * (1 - 0.6 * agitation) : gap,
       gain: (say.gain ?? 1) * (1 - 0.2 * intimacy) * (1 + 0.15 * agitation),
     };
     if (say.aside) {
       const aside = this.voice({ side: other(say.side), gap: [0, 0], sound: pick(this.rng, say.aside) }, calm, lively, intimacy);
-      const seconds = samples.length / this.sampleRate;
-      turn.aside = { side: other(say.side), samples: aside, at: seconds * between(this.rng, 0.35, 0.8), gain: 0.5 };
+      turn.aside = { side: other(say.side), line: aside, at: line.seconds * between(this.rng, 0.35, 0.8), gain: 0.5 };
     }
     return turn;
   }
 
-  private voice(say: Say, rate: number, range: number, intimacy: number): Float32Array<ArrayBuffer> {
+  private voice(say: Say, rate: number, range: number, intimacy: number): Line {
     const speaker = this.speakers[say.side];
     const given: Partial<Style> = 'style' in say ? say.style : {};
     const style: Style = {
@@ -203,8 +221,12 @@ export class Script {
       breath: Math.min(0.75, (given.breath ?? 0) + 0.3 * intimacy),
     };
     const tracks = 'sound' in say ? interject(say.sound, speaker, style, this.rng) : speak(this.language, speaker, style, this.rng);
-    const x = synthesise(tracks, speaker, this.sampleRate, this.rng);
-    level(x, TURN_DB);
-    return x;
+    // Its own random numbers, so it sounds the same whenever it is made.
+    const seed = Math.floor(this.rng() * 2 ** 32);
+    return new Line(tracks.frames, this.sampleRate, () => {
+      const x = synthesise(tracks, speaker, this.sampleRate, mulberry32(seed));
+      level(x, TURN_DB);
+      return x;
+    });
   }
 }

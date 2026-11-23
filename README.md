@@ -6,7 +6,6 @@ A live camera view that changes the phones it sees. It has three modes:
 - **Grow**: the phone inflates, from its real size to twice as big.
 - **Hijack**: the picture stays as it is; aim the camera at someone's phone and overhear "their"
   conversation in headphones. Nothing is intercepted: it is a synthesised murmur without words.
-  Mac only.
 
 It runs in the browser, on the Mac alone or with an iPad as camera and screen while the Mac does
 the work. Pictures never leave the local network, and nothing is saved unless you take a snapshot
@@ -63,8 +62,9 @@ Do "iPad: before the first time" below once. Then, each time:
      for example `https://10.21.12.136:8443/stream.html`
    - **Ethernet cable** (the iPad's Wi-Fi off): `https://192.168.77.1:8443/stream.html`
 
-Double-tap the iPad for its panel: Remove / Grow, screenshot, record, camera, mirror. Ctrl-C in
-both Terminal windows stops everything.
+Double-tap the iPad for its panel: Remove / Grow / Hijack, screenshot, record, camera, mirror. In
+hijack mode the sound plays on the iPad, so the headphones go there; if it says "tap for sound",
+tap once. Ctrl-C in both Terminal windows stops everything.
 
 ## iPad: before the first time
 
@@ -103,6 +103,8 @@ cable. Set fixed addresses, router empty:
 - **The picture freezes**: the Mac's window must be visible. Otherwise the iPad reconnects by itself;
   its panel also has Reconnect.
 - **It is slow**: plug the Mac in, restart it, close other apps.
+- **Hijack is silent on the iPad**: tap the picture once; check the volume; a phone has to be inside
+  the dashed circle.
 - **Someone else has the picture**: anyone on the same network who opens the stream page takes over.
   Use the cable, with the Mac's Wi-Fi off, or your own network.
 - **Port 8443 is taken**: `npm run dev:ipad -- --port 8444`, then `PORT=8444 npm run stream:mac`, and
@@ -130,6 +132,7 @@ On a touch screen, double-tap for the panel. Settings are remembered in the brow
 - Phone look-alikes (a dark wallet held upright) can be taken for phones; small or edge-on phones
   are missed.
 - Everything is 640×480, so a grown phone looks soft.
+- The iPad Pro has one USB-C port: with the Ethernet cable in it, use Bluetooth headphones or a hub.
 - The iPad can't run the models fast enough on its own (2018 iPad Pro), hence the Mac.
 
 ## Code

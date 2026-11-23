@@ -20,8 +20,8 @@
 // 0–2 min, fixed per person), so one comes in mid-sentence, and when one comes back it has moved
 // on. The tracker forgets someone who is out of sight for more than 1 s, so turning away and back
 // gives that person another conversation.
-import type { LiveSound } from '../audio/engine';
 import { clamp01, type VoiceParams } from '../audio/conversation';
+import type { SoundOutput } from '../audio/output';
 import { SCENE_IDS, type SceneId, type Settings } from '../settings';
 import type { Effect, EffectFrame, PickedPhone } from './types';
 
@@ -73,7 +73,7 @@ export class HijackEffect implements Effect {
   constructor(
     private width: number,
     private height: number,
-    private sound: LiveSound,
+    private sound: SoundOutput,
   ) {}
 
   watchMs(s: Settings): number {
@@ -81,10 +81,7 @@ export class HijackEffect implements Effect {
   }
 
   describe(): string {
-    const e = this.sound.engine;
-    if (!e || !this.sound.running) return 'hijack · no sound yet: click the page or press a key';
-    const level = e.levels();
-    const out = Number.isFinite(level.rms) ? `out ${level.rms.toFixed(0)} dB` : 'out silent';
+    const out = this.sound.status();
     const f = this.focus;
     if (!f) return `hijack · nothing in focus · ${out}`;
     const p = f.params;
@@ -99,7 +96,7 @@ export class HijackEffect implements Effect {
     this.challenger = null;
     this.ring.alpha = 0;
     this.ring.target = false;
-    this.sound.engine?.release();
+    this.sound.release();
   }
 
   deactivate(): void {
@@ -136,7 +133,7 @@ export class HijackEffect implements Effect {
       if (waited && (!keep || now - this.lastSwitch >= MIN_FOCUS_MS)) next = best;
     } else this.challenger = null;
 
-    const e = this.sound.engine;
+    const e = this.sound;
     if (next) {
       this.challenger = null;
       this.lastSwitch = now;
@@ -145,9 +142,9 @@ export class HijackEffect implements Effect {
       const params = this.paramsFor(next, s);
       const key = `${next.phone.id}:${scene}`;
       this.focus = { id: next.phone.id, since: now, lastSeen: now, key, params };
-      e?.focus(key, scene, person.seed, params, (now - person.zero) / 1000);
+      e.focus(key, scene, person.seed, params, (now - person.zero) / 1000);
     } else if (!keep) {
-      if (this.focus) e?.release();
+      if (this.focus) e.release();
       this.focus = null;
     } else if (this.focus) {
       // In focus: new numbers if it was seen this frame; the last ones again while it is lost.
@@ -156,10 +153,10 @@ export class HijackEffect implements Effect {
       const scene = this.effectiveScene(person);
       const key = `${this.focus.id}:${scene}`;
       // The setting was changed in the panel: hear the new conversation at once.
-      if (key !== this.focus.key || (e && e.focusKey !== key)) {
+      if (key !== this.focus.key || e.focusKey !== key) {
         this.focus.key = key;
-        e?.focus(key, scene, person.seed, this.focus.params, (now - person.zero) / 1000);
-      } else e?.update(this.focus.params);
+        e.focus(key, scene, person.seed, this.focus.params, (now - person.zero) / 1000);
+      } else e.update(this.focus.params);
     }
 
     // Where to draw the ring: around the phone in focus, where it was last seen.

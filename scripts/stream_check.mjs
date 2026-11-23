@@ -2,11 +2,14 @@
 // like two devices: one plays the iPad (a video file as its camera, an iPad user agent and touch,
 // on /stream.html?latency), the other the Mac (/?source=stream). Prints speed and round-trip
 // latency per fill mode, and how long the picture takes to come back after each interruption.
+// Then hijack mode, switched on with the iPad's own button: the sound has to play on the iPad
+// page (measured, not heard) and not on the Mac's, and come back after interruptions.
 //
 //   npm run dev:ipad                                                   # in another terminal
 //   npm run check:stream -- captures/clip_moving.y4m
 //   npm run check:stream -- captures/clip_moving.y4m --minutes 30      # then a soak test
 //   npm run check:stream -- captures/clip_moving.y4m --no-recovery     # skip the interruptions
+//   npm run check:stream -- captures/clip_moving.y4m --hijack-only     # only hijack mode and its sound
 //   BASE=https://localhost:8444/ npm run check:stream -- ...           # another server
 //
 // Writes captures/stream_sheet.jpg: what the "iPad" sent (left) and got back (right), 4 frames, and
@@ -26,7 +29,8 @@ import puppeteer from 'puppeteer-core';
 const args = process.argv.slice(2);
 const clip = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--minutes');
 const minutes = args.includes('--minutes') ? Number(args[args.indexOf('--minutes') + 1]) || 0 : 0;
-const recovery = !args.includes('--no-recovery');
+const hijackOnly = args.includes('--hijack-only');
+const recovery = !args.includes('--no-recovery') && !hijackOnly;
 if (!clip) {
   console.error('usage: node scripts/stream_check.mjs <clip.y4m> [--minutes N] [--no-recovery]');
   process.exit(1);
@@ -130,7 +134,7 @@ try {
   // 2. Each fill mode: Mac speed, what the iPad shows, round trip.
   //    Then grow mode, switched on with the iPad's button.
   const rows = [];
-  for (const fill of ['migan', 'telea', 'stylised', 'grow']) {
+  for (const fill of hijackOnly ? [] : ['migan', 'telea', 'stylised', 'grow']) {
     if (fill === 'grow') {
       await tapMode('grow');
       await sleep(4000); // it has grown to full size by the time it is measured
@@ -154,19 +158,21 @@ try {
       'Mac gets': m.link.inRes ?? '–',
     });
   }
-  console.table(rows);
+  if (rows.length) console.table(rows);
   if (rows.some((r) => !r.samples)) {
     problems.push('no round-trip samples for at least one fill mode (bar code unreadable?)');
   }
 
   // 3. A look: sent vs. received. First grow (still on), then back to remove with the iPad's button.
-  await writeSheet('stream_grow_sheet.jpg');
-  await tapMode('remove');
-  await mac.evaluate(() => window.deviceRemover.store.set('fill', 'migan'));
-  await sleep(2500);
-  await writeSheet('stream_sheet.jpg');
+  if (!hijackOnly) {
+    await writeSheet('stream_grow_sheet.jpg');
+    await tapMode('remove');
+    await mac.evaluate(() => window.deviceRemover.store.set('fill', 'migan'));
+    await sleep(2500);
+    await writeSheet('stream_sheet.jpg');
+  }
 
-  /** Tap Remove or Grow in the iPad's panel; the Mac must follow and the iPad must show it. */
+  /** Tap Remove, Grow or Hijack in the iPad's panel; the Mac must follow and the iPad must show it. */
   async function tapMode(mode) {
     await ipad.evaluate((m) => [...document.querySelectorAll('.modes .btn')].find((b) => b.textContent.toLowerCase() === m).click(), mode);
     await until(mac, (m) => window.deviceRemover.store.value.mode === m, mode, Date.now(), 5000);
@@ -191,7 +197,117 @@ try {
     console.log(`wrote captures/${file} (left: sent, right: received)`);
   }
 
-  // 4. Interruptions: time until the "iPad" shows new frames again.
+  /** In hijack mode: the sound of the iPad page over `ms`: share of the time someone speaks, loudness then, peak. */
+  async function listen(ms) {
+    return ipad.evaluate(async (ms) => {
+      const t = performance.now();
+      let n = 0;
+      let heard = 0;
+      let sum = 0;
+      let peak = -Infinity;
+      while (performance.now() - t < ms) {
+        const { levels } = window.streamPage.sound();
+        n++;
+        if (levels && levels.rms > -45) {
+          heard++;
+          sum += 10 ** (levels.rms / 10);
+        }
+        if (levels) peak = Math.max(peak, levels.peak);
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      return { speaking: Math.round((100 * heard) / n), rms: heard ? 10 * Math.log10(sum / heard) : -Infinity, peak };
+    }, ms);
+  }
+
+  // 4. Hijack: the Mac finds the phones, the iPad speaks.
+  {
+    // The clip's phone moves about: the focus zone is the whole picture.
+    await mac.evaluate(() => {
+      const { store } = window.deviceRemover;
+      store.set('hijackZone', 2);
+      store.set('hijackScene', 'catchup');
+    });
+    const inFocus = () => window.streamPage?.sound().running && window.streamPage.sound().key !== '';
+    let t = Date.now();
+    await tapMode('hijack');
+    const started = await until(ipad, inFocus, undefined, t, 15_000);
+    await sleep(2500);
+    const heard = await listen(9000);
+    const [i, m] = [await ipadState(ipad), await macState(mac)];
+    const s = await ipad.evaluate(() => window.streamPage.sound());
+    const macSound = await mac.evaluate(() => ({ engine: !!window.deviceRemover.sound.engine, hint: !document.getElementById('sound').classList.contains('hidden'), effect: window.deviceRemover.effect.describe() }));
+    console.log(`hijack, tapped on the "iPad": someone in focus there after ${started} ms`);
+    console.log(`  iPad: ${s.key} · speaking ${heard.speaking} % of the time, ${r1(heard.rms)} dB RMS, peak ${r1(heard.peak)} dB · slowest line written in ${r0(s.slowestMs)} ms · ${r0(i.shownFps)} fps shown`);
+    console.log(`  Mac: own sound ${macSound.engine ? 'ON (wrong)' : 'off'}, hint ${macSound.hint ? 'SHOWN (wrong)' : 'hidden'} · pipeline ${r1(m.fillFps)} fps, detect ${r1(m.detectMs)} ms · ${macSound.effect}`);
+    if (heard.speaking < 15) problems.push('hijack: nobody is heard on the iPad page');
+    if (macSound.engine || macSound.hint) problems.push('hijack: the Mac page makes sound or asks for a click');
+
+    // Left and right: as on the iPad's screen, which is mirrored with the front camera.
+    const pans = await ipad.evaluate(async () => {
+      const box = [...document.querySelectorAll('.panel input[type=checkbox]')][0]; // Mirror
+      const engine = window.streamPage.engine();
+      const real = engine.update.bind(engine);
+      const seen = {};
+      for (const on of [true, false]) {
+        if (box.checked !== on) box.click();
+        let pan = null;
+        engine.update = (p, at) => {
+          pan = p.pan;
+          real(p, at);
+        };
+        await new Promise((r) => setTimeout(r, 700));
+        seen[on] = pan;
+      }
+      engine.update = real;
+      if (!box.checked) box.click();
+      return seen;
+    });
+    console.log(`  phone to the left/right: ${r1(pans.true)} with the mirror on, ${r1(pans.false)} with it off (the clip moves, so not exactly opposite)`);
+    if (pans.true * pans.false > 0.02) problems.push('hijack: the mirror does not swap left and right');
+
+    // Interruptions.
+    const rows2 = [];
+    const silent = () => !window.streamPage || window.streamPage.sound().key === '';
+    t = Date.now();
+    await ipad.reload({ waitUntil: 'domcontentloaded' });
+    rows2.push({ interruption: 'iPad page reloaded', 'in focus again after ms': await until(ipad, inFocus, undefined, t) });
+    await sleep(3000);
+
+    let c0 = await ipad.evaluate(() => window.streamPage.connections());
+    t = Date.now();
+    await mac.evaluate(() => window.deviceRemoverStream.dropLink());
+    const fellSilent = await until(ipad, silent, undefined, t, 8000).catch(() => null);
+    await until(ipad, (c) => window.streamPage.connections() > c && window.streamPage.linkFrames() > 0, c0, t);
+    rows2.push({ interruption: 'connection died silently', 'silent after ms': fellSilent ?? 'never', 'in focus again after ms': await until(ipad, inFocus, undefined, t) });
+    await sleep(3000);
+
+    t = Date.now();
+    await mac.reload({ waitUntil: 'domcontentloaded' });
+    const gone = await until(ipad, silent, undefined, t, 8000).catch(() => null);
+    rows2.push({ interruption: 'Mac page reloaded (models reload)', 'silent after ms': gone ?? 'never', 'in focus again after ms': await until(ipad, inFocus, undefined, t) });
+    await until(mac, () => !!window.deviceRemover);
+    await sleep(3000);
+
+    // A phone nobody sees any more: the state "nobody" has to arrive.
+    t = Date.now();
+    await mac.evaluate(() => window.deviceRemover.store.set('hijackZone', 0.01));
+    rows2.push({ interruption: 'phone out of the zone', 'silent after ms': await until(ipad, silent, undefined, t, 8000).catch(() => 'never') });
+    t = Date.now();
+    await mac.evaluate(() => window.deviceRemover.store.set('hijackZone', 2));
+    await until(ipad, inFocus, undefined, t, 15_000);
+    t = Date.now();
+    await tapMode('remove');
+    rows2.push({ interruption: 'Remove tapped', 'silent after ms': await until(ipad, silent, undefined, t, 8000).catch(() => 'never') });
+    await sleep(6000);
+    const after = await listen(1500);
+    console.table(rows2);
+    // Silence is -Infinity, which arrives here as null.
+    if (after.peak !== null && after.peak > -80) problems.push(`hijack: still ${r1(after.peak)} dB on the iPad 6 s after Remove`);
+    if (rows2.some((r) => r['silent after ms'] === 'never')) problems.push('hijack: the iPad did not fall silent');
+    await mac.evaluate(() => window.deviceRemover.store.set('hijackScene', 'auto'));
+  }
+
+  // 5. Interruptions: time until the "iPad" shows new frames again.
   if (recovery) {
     const back = [];
     const connections = () => ipad.evaluate(() => window.streamPage.connections());
@@ -253,7 +369,7 @@ try {
     await until(mac, () => !!window.deviceRemover);
   }
 
-  // 5. Soak: one line a minute. Steady connections count = no reconnects.
+  // 6. Soak: one line a minute. Steady connections count = no reconnects.
   if (minutes > 0) {
     console.log(`soak test, ${minutes} min:`);
     const soak = [];

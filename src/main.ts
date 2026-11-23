@@ -14,6 +14,7 @@ import { FILL_ORDER, MODE_ORDER, SCENE_IDS, SettingsStore, STYLE_ORDER, type Mod
 import { downloadBlob, downloadPng, mirrored, sideBySide, timestamp, toPngBlob } from './snapshot';
 import type { ModeControl } from './stream/modeLink';
 import { openRemote, type RemoteSource } from './stream/remoteSource';
+import { RemoteSound } from './stream/soundLink';
 import { DebugPanel, isTouchDevice } from './ui/panel';
 import { noZoom } from './ui/noZoom';
 
@@ -22,9 +23,12 @@ noZoom();
 
 const store = new SettingsStore();
 const settings = store.value;
-// Hijack mode's sound. Browsers allow sound only after a click or key press on the page.
+// Hijack mode's sound: here, or in streaming mode on the iPad. Browsers allow sound only after a
+// click or key press on the page.
+const streamMode = new URLSearchParams(location.search).get('source') === 'stream';
 const sound = new LiveSound();
-const unlockSound = () => settings.mode === 'hijack' && sound.ensure();
+const remoteSound = streamMode ? new RemoteSound() : null;
+const unlockSound = () => settings.mode === 'hijack' && !remoteSound && sound.ensure(true);
 window.addEventListener('keydown', unlockSound);
 window.addEventListener('pointerdown', unlockSound);
 
@@ -105,10 +109,9 @@ async function main(): Promise<void> {
   let source: FrameSource;
   // Streaming mode (?source=stream, npm run dev:ipad only): the frames come from the iPad's
   // stream page and the result goes back to it. The iPad mirrors what it shows, so the Mac does not.
-  const streamMode = params.get('source') === 'stream';
   let remote: RemoteSource | null = null;
   if (streamMode) settings.mirror = false;
-  // The iPad's Remove / Grow switch changes the mode here, like G does.
+  // The iPad's Remove / Grow / Hijack switch changes the mode here, like G and H do.
   const modeControl: ModeControl = {
     get: () => settings.mode,
     set: (mode) => {
@@ -119,7 +122,7 @@ async function main(): Promise<void> {
   };
   say(still ? 'loading image…' : streamMode ? 'waiting for the iPad…' : 'waiting for camera…');
   try {
-    source = still ? await openStill(still) : streamMode ? (remote = await openRemote(say, modeControl)) : await openCamera(facing);
+    source = still ? await openStill(still) : remoteSound ? (remote = await openRemote(say, modeControl, remoteSound)) : await openCamera(facing);
   } catch (err) {
     const denied = err instanceof DOMException && err.name === 'NotAllowedError';
     say(denied ? 'Camera access was blocked. Allow it for this page and reload.' : `Camera error: ${(err as Error).message}`, true);
@@ -146,7 +149,7 @@ async function main(): Promise<void> {
   const fills = new FillSet();
   const remove = new RemoveEffect(source.width, source.height, fills);
   const grow = new GrowEffect(source.width, source.height);
-  const hijack = new HijackEffect(source.width, source.height, sound);
+  const hijack = new HijackEffect(source.width, source.height, remoteSound ?? sound);
   const effectFor = (mode: ModeId) => (mode === 'grow' ? grow : mode === 'hijack' ? hijack : remove);
   const pipeline = new Pipeline(source, detector, effectFor(settings.mode), settings);
   pipeline.debugRect = () => (pipeline.activeEffect === remove ? remove.rect : null);
@@ -191,7 +194,7 @@ async function main(): Promise<void> {
     if (lastFrame && now > lastFrame) displayFps += 0.1 * (1000 / (now - lastFrame) - displayFps);
     lastFrame = now;
     pipeline.render(ctx);
-    const wantHint = settings.mode === 'hijack' && !sound.running;
+    const wantHint = settings.mode === 'hijack' && !remoteSound && !sound.running;
     if (wantHint !== soundHintShown) soundHint.classList.toggle('hidden', !(soundHintShown = wantHint));
     // Screen recording, at most 30 frames a second: the picture as on screen, but without the
     // mask overlay (drawn again without it only while the overlay is on).
@@ -231,8 +234,8 @@ async function main(): Promise<void> {
     if (recorder.recording) return recorder.stop();
     if (!ScreenRecorder.supported) return note('this browser cannot record the screen');
     try {
-      // In hijack mode the recording has the sound too.
-      const audio = settings.mode === 'hijack' ? sound.stream() : null;
+      // In hijack mode the recording has the sound too (in streaming mode, the iPad's recording).
+      const audio = settings.mode === 'hijack' && sound.running ? sound.stream() : null;
       recorder.start(view.width, view.height, `device-remover_${timestamp()}`, recordMax, audio);
       lastRecorded = 0;
       report('status', { text: `recording started, ${view.width}×${view.height}` });
@@ -278,7 +281,7 @@ async function main(): Promise<void> {
         else {
           beforeHijack = settings.mode;
           store.set('mode', 'hijack');
-          sound.ensure();
+          unlockSound();
         }
         break;
       case 'm':
@@ -325,11 +328,16 @@ async function main(): Promise<void> {
   // Hijack mode: hear a conversation for 10 s without a phone (the one chosen, or each in turn).
   let testIndex = 0;
   panel.addAction('Test sound', () => {
-    sound.ensure();
     const scene = settings.hijackScene === 'auto' ? SCENE_IDS[testIndex++ % SCENE_IDS.length] : settings.hijackScene;
+    const seed = Math.floor(Math.random() * 2 ** 31);
+    if (remoteSound) {
+      remoteSound.setVolume(settings.hijackVolume);
+      return note(remoteSound.preview(scene, seed) ? `test sound on the iPad: ${SCENES[scene].label}` : 'no test sound: the iPad is not connected');
+    }
+    sound.ensure(true);
     if (!sound.engine) return note('no sound: this browser has no Web Audio');
     sound.setVolume(settings.hijackVolume);
-    sound.engine.preview(scene, Math.floor(Math.random() * 2 ** 31));
+    sound.engine.preview(scene, seed);
     note(`test sound: ${SCENES[scene].label}`);
   });
   panel.addAction('Close', () => panel.toggle());
@@ -387,6 +395,7 @@ async function main(): Promise<void> {
       grow,
       hijack,
       sound,
+      remoteSound,
       detector,
       store,
       displayFps: () => displayFps,

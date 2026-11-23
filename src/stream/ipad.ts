@@ -3,7 +3,8 @@
  * screen, the picture the Mac sends back. Nothing is processed here, and the iPad's own camera
  * picture is never shown: only finished frames from the Mac.
  *
- * The panel's Remove / Grow switch sets the Mac's mode (modeLink.ts).
+ * The panel's Remove / Grow / Hijack switch sets the Mac's mode (modeLink.ts). In hijack mode
+ * this page makes the sound: the Mac says who is in focus (soundLink.ts).
  *
  * This page drives recovery. It starts a fresh connection whenever the Mac page appears, the
  * connection fails, or no frame has arrived for 3 s, and keeps trying for as long as it is open.
@@ -16,6 +17,8 @@
  */
 import '../style.css';
 import './stream.css';
+import { Conversation } from '../audio/conversation';
+import { LiveSound } from '../audio/engine';
 import { report, reporting, startReporting } from '../devReport';
 import { downloadBlob, timestamp } from '../snapshot';
 import { noZoom } from '../ui/noZoom';
@@ -26,6 +29,7 @@ import { IPAD_MODES, MODE_CHANNEL, ModeClient, type IpadMode } from './modeLink'
 import { ScreenRecorder } from '../recorder';
 import { keepScreenOn, toggleFullscreen } from './screen';
 import { SHOT_CHANNEL, ShotClient } from './shots';
+import { SOUND_CHANNEL, SOUND_CHANNEL_OPTIONS, SoundClient } from './soundLink';
 import { Signal, type SignalMessage } from './signal';
 
 startReporting();
@@ -209,7 +213,8 @@ function toggleRecording(): void {
     return;
   }
   try {
-    recorder.start(w, h, `device-remover_ipad_${timestamp()}`, recordMax);
+    // In hijack mode the recording has the sound too.
+    recorder.start(w, h, `device-remover_ipad_${timestamp()}`, recordMax, modes.mode === 'hijack' && sound.running ? sound.stream() : null);
     recorder.draw(held ? freeze : out, w, h, prefs.mirror);
     report('status', { text: `recording started, ${w}×${h}` });
   } catch (err) {
@@ -261,7 +266,27 @@ addAction('Fullscreen', toggleFullscreen);
 addAction('Reconnect', () => void connect('reconnect button'));
 addAction('Close', togglePanel);
 
-// Remove or grow the phones. The mode is the Mac's; the switch shows what the Mac says it is in.
+// Hijack mode's sound plays here. Safari allows sound after a tap; also on a page that uses the
+// camera, as this one does, so it may well start by itself. If not, a note asks for a tap.
+const sound = new LiveSound(false);
+const soundLink = new SoundClient(sound, () => prefs.mirror);
+const soundHint = el('div', 'hidden', isTouchDevice ? 'tap for sound' : 'click or press any key for sound');
+soundHint.id = 'sound';
+document.body.append(soundHint);
+function updateSound(): void {
+  soundHint.classList.toggle('hidden', modes.mode !== 'hijack' || sound.running);
+}
+sound.onChange = () => {
+  report('status', { text: `sound ${sound.running ? 'on' : 'off'}` });
+  soundLink.tell();
+  updateSound();
+};
+for (const type of ['touchend', 'click', 'keydown'] as const) {
+  document.addEventListener(type, () => modes.mode === 'hijack' && sound.ensure(true), { capture: true });
+}
+
+// Remove or grow the phones, or listen to them. The mode is the Mac's; the switch shows what the
+// Mac says it is in.
 const modes = new ModeClient();
 {
   const row = el('div', 'row');
@@ -269,10 +294,14 @@ const modes = new ModeClient();
   const value = el('span', 'value');
   head.append(el('span', undefined, 'Mode'), value);
   const group = el('div', 'modes');
-  const labels = { remove: 'Remove', grow: 'Grow' };
+  const labels = { remove: 'Remove', grow: 'Grow', hijack: 'Hijack' };
   const buttons = IPAD_MODES.map((mode) => {
     const b = el('button', 'btn', labels[mode]);
-    b.onclick = () => askMode(mode);
+    b.onclick = () => {
+      // Still within the tap: Safari lets the sound start.
+      if (mode === 'hijack') sound.ensure(true);
+      askMode(mode);
+    };
     group.append(b);
     return { mode, b };
   });
@@ -282,7 +311,9 @@ const modes = new ModeClient();
       b.classList.toggle('chosen', modes.mode === mode);
       b.setAttribute('aria-pressed', String(modes.mode === mode));
     }
-    value.textContent = modes.mode === null ? 'no connection to the Mac' : modes.mode === 'hijack' ? 'hijack (set on the Mac)' : '';
+    value.textContent = modes.mode === null ? 'no connection to the Mac' : '';
+    if (modes.mode === 'hijack') sound.ensure();
+    updateSound();
   };
   modes.onChange();
   row.append(head, group);
@@ -330,7 +361,7 @@ for (const [key, label] of [
   row.append(input, el('span', undefined, label));
   panel.append(row);
 }
-panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · G remove / grow · S screenshot · V record · F fullscreen · R reconnect'));
+panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · G remove / grow · H hijack · S screenshot · V record · F fullscreen · R reconnect'));
 document.body.append(panel);
 
 let lastTap = 0;
@@ -348,6 +379,10 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === 'd') togglePanel();
   else if (k === 'g') askMode(modes.mode === 'grow' ? 'remove' : 'grow');
+  else if (k === 'h') {
+    sound.ensure(true);
+    askMode(modes.mode === 'hijack' ? 'remove' : 'hijack');
+  }
   else if (k === 's') void screenshot();
   else if (k === 'v') toggleRecording();
   else if (k === 'f') toggleFullscreen();
@@ -418,6 +453,7 @@ async function connect(reason: string): Promise<void> {
   // The screenshot's way back from the Mac, on the same connection.
   shots.attach(p.createDataChannel(SHOT_CHANNEL));
   modes.attach(p.createDataChannel(MODE_CHANNEL));
+  soundLink.attach(p.createDataChannel(SOUND_CHANNEL, SOUND_CHANNEL_OPTIONS));
   notes = `${preferCodec(t, codec)} · ${lowLatency(t.receiver)}`;
   p.ontrack = (e) => {
     if (pc !== p) return;
@@ -563,6 +599,7 @@ let shownFps = 0;
 let lastCount = 0;
 let lastCountAt = performance.now();
 let tick = 0;
+let slowestReported = 0;
 
 function statsText(): string {
   const lat = reader?.summary();
@@ -575,6 +612,7 @@ function statsText(): string {
     `camera    ${prefs.camera} · sending ${width}×${height}${latencyMode ? ' with frame counter' : ''}`,
     `Mac       ${signal?.peerPresent ? (macSending ? 'sending' : answered ? 'loading the detector…' : 'connecting…') : 'page not open'}`,
     `link #${connections} · ${notes}`,
+    `sound     ${modes.mode !== 'hijack' ? '– (hijack mode)' : !sound.running ? 'waiting for a tap' : `${sound.focusKey ? sound.focusKey.split(':').slice(0, 2).join(' ') : 'nobody in focus'} · ${sound.status()} · slowest line ${Conversation.slowestMs.toFixed(0)} ms`}`,
   ].join('\n');
 }
 
@@ -591,6 +629,11 @@ setInterval(() => {
     if (reporting && tick++ % 5 === 0) {
       const lat = reader?.summary();
       report('link', { role: 'ipad', ...s, shownFps, latencyMs: lat?.median, latencyP95: lat?.p95, latencyN: lat?.n, connections });
+      // How long this page stood still to make a line: the one thing only the real iPad can tell.
+      if (modes.mode === 'hijack' && Conversation.slowestMs > slowestReported + 2) {
+        slowestReported = Conversation.slowestMs;
+        report('status', { text: `sound: slowest line written in ${slowestReported.toFixed(0)} ms` });
+      }
     }
   });
 }, 1000);
@@ -723,6 +766,7 @@ async function main(): Promise<void> {
       else {
         holdPicture();
         modes.detach();
+        soundLink.detach();
         report('status', { text: 'the Mac page left' });
       }
     },
@@ -730,6 +774,7 @@ async function main(): Promise<void> {
     onReplaced: () => {
       stopped = true;
       clearTimeout(retryTimer);
+      soundLink.detach();
       pc?.close();
       cam?.getTracks().forEach((t) => t.stop());
       say('This page was opened again somewhere else, so this copy has stopped. Reload to take over.', true);
@@ -749,6 +794,14 @@ async function main(): Promise<void> {
       resetLatency: () => reader?.reset(),
       reconnect: () => connect('test'),
       mode: () => modes.mode,
+      sound: () => ({
+        running: sound.running,
+        key: sound.focusKey,
+        levels: sound.engine?.levels() ?? null,
+        hint: !soundHint.classList.contains('hidden'),
+        slowestMs: Conversation.slowestMs,
+      }),
+      engine: () => sound.engine,
       camera: () => {
         const ts = (camTrack as (MediaStreamTrack & { stats?: { deliveredFrames: number; totalFrames: number } }) | null)?.stats;
         return {

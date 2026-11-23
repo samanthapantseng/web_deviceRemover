@@ -18,6 +18,9 @@
 // test renders sound files with it, faster than real time).
 import type { SceneId } from '../settings';
 import { BREAK_IN_S, clamp01, Conversation, type Kit, type VoiceParams } from './conversation';
+import type { SoundOutput } from './output';
+import { mulberry32 } from './random';
+import { Script } from './scenes';
 
 /** Highest possible output sample value (0.8 = -1.9 dBFS). */
 export const CEILING = 0.8;
@@ -75,6 +78,11 @@ export class SoundEngine {
   /** Live use: schedule what is said ahead and run the watchdog, on a timer. */
   startClock(): void {
     if (this.timer) return;
+    // Say something nobody hears: the first lines a browser makes take it several times as long,
+    // and that would fall on the moment someone comes into focus.
+    const warmUp = new Script('catchup', mulberry32(1), mulberry32(2), this.ctx.sampleRate);
+    setTimeout(() => warmUp.next(0, 0).line.samples, 50);
+    setTimeout(() => warmUp.next(0, 0).line.samples, 150);
     this.timer = setInterval(() => {
       if (this.current && performance.now() - this.lastUpdate > WATCHDOG_MS) this.release();
       this.scheduleUntil(this.ctx.currentTime + LOOKAHEAD);
@@ -292,24 +300,46 @@ function tanhCurve(k: number, normalise = false): Float32Array<ArrayBuffer> {
   return curve;
 }
 
+/** How often to try again to get sound while the browser does not allow it (ms). */
+const RETRY_MS = 2000;
+
 /**
- * The live sound for the page. Browsers only allow sound after the person has clicked or pressed
- * a key on the page; until then there is no audio context and `running` is false.
+ * The live sound for the page. Browsers only allow sound after the person has clicked, tapped or
+ * pressed a key on the page; until then `running` is false.
  */
-export class LiveSound {
+export class LiveSound implements SoundOutput {
   engine: SoundEngine | null = null;
   private ctx: AudioContext | null = null;
   private volume = 0.5;
+  private triedAt = -Infinity;
   /** Called when sound starts or stops being possible (to show or hide the "click for sound" hint). */
   onChange: () => void = () => undefined;
 
-  /** Create the audio context if the browser allows it, and resume it. Cheap; call it often. */
-  ensure(): void {
+  /**
+   * `waitForGesture`: do not even try before the first click or key press (Chrome logs a warning
+   * for that). Not on the iPad: Safari also allows sound on a page that is using the camera.
+   */
+  constructor(private readonly waitForGesture = true) {}
+
+  /**
+   * Create the audio context if the browser allows it, and resume it. Cheap; call it often, and
+   * with `gesture` from within a click, tap or key press.
+   */
+  ensure(gesture = false): void {
+    if (this.running) return;
+    const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+    if (this.waitForGesture && !gesture && activation && !activation.hasBeenActive) return;
+    const now = performance.now();
+    if (!gesture && now - this.triedAt < RETRY_MS) return;
+    this.triedAt = now;
     if (!this.ctx) {
-      // Before the first click or key press an AudioContext would start suspended (with a
-      // warning in the console), so wait for it.
-      const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
-      if (activation && !activation.hasBeenActive) return;
+      // Safari: play like music does, also when the iPad is set to silent.
+      const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+      try {
+        if (session) session.type = 'playback';
+      } catch {
+        /* not allowed to choose: the browser's own choice */
+      }
       try {
         this.ctx = new AudioContext({ latencyHint: 'playback' });
       } catch (err) {
@@ -329,8 +359,33 @@ export class LiveSound {
   }
 
   setVolume(v: number): void {
+    if (v === this.volume) return;
     this.volume = v;
     this.engine?.setVolume(v);
+  }
+
+  get focusKey(): string {
+    return this.engine?.focusKey ?? '';
+  }
+
+  focus(key: string, scene: SceneId, seed: number, p: VoiceParams, elapsed: number): void {
+    // While the browser holds the sound back, time stands still in it: everything started
+    // meanwhile would come out at once.
+    if (this.running) this.engine?.focus(key, scene, seed, p, elapsed);
+  }
+
+  update(p: VoiceParams): void {
+    this.engine?.update(p);
+  }
+
+  release(): void {
+    this.engine?.release();
+  }
+
+  status(): string {
+    if (!this.engine || !this.running) return 'no sound yet: click the page or press a key';
+    const { rms } = this.engine.levels();
+    return Number.isFinite(rms) ? `out ${rms.toFixed(0)} dB` : 'out silent';
   }
 
   stream(): MediaStream | null {
