@@ -8,6 +8,7 @@
 import { fit, frameWaiter, type FrameSource } from '../camera';
 import { report, reporting } from '../devReport';
 import { LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
+import { MODE_CHANNEL, ModeServer, type ModeControl } from './modeLink';
 import { serveShots, SHOT_CHANNEL } from './shots';
 import { Signal, type SignalMessage } from './signal';
 
@@ -63,9 +64,13 @@ async function allowAllAddresses(say: Say): Promise<void> {
   say('waiting for the iPad…');
 }
 
-/** Resolves once the first frame from the iPad has arrived (its size sets the pipeline's). */
-export async function openRemote(say: Say): Promise<RemoteSource> {
+/**
+ * Resolves once the first frame from the iPad has arrived (its size sets the pipeline's).
+ * `modes`: this page's mode, which the iPad's Remove / Grow switch changes (modeLink.ts).
+ */
+export async function openRemote(say: Say, modes: ModeControl): Promise<RemoteSource> {
   await allowAllAddresses(say);
+  const modeServer = new ModeServer(modes);
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
@@ -143,9 +148,12 @@ export async function openRemote(say: Say): Promise<RemoteSource> {
         say('');
       }
     };
-    // The iPad's screenshot requests (an iPad page from before this channel existed has none).
+    // The iPad's screenshot requests and its mode switch (an iPad page from before one of these
+    // channels existed doesn't open it).
     p.ondatachannel = (e) => {
-      if (pc === p && e.channel.label === SHOT_CHANNEL) serveShots(e.channel, shot);
+      if (pc !== p) return;
+      if (e.channel.label === SHOT_CHANNEL) serveShots(e.channel, shot);
+      else if (e.channel.label === MODE_CHANNEL) modeServer.attach(e.channel);
     };
     await p.setRemoteDescription({ type: 'offer', sdp: o.sdp });
     const t = p.getTransceivers().find((x) => x.receiver.track.kind === 'video');

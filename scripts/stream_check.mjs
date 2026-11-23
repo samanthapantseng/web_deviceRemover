@@ -9,7 +9,8 @@
 //   npm run check:stream -- captures/clip_moving.y4m --no-recovery     # skip the interruptions
 //   BASE=https://localhost:8444/ npm run check:stream -- ...           # another server
 //
-// Writes captures/stream_sheet.jpg: what the "iPad" sent (left) and got back (right), 4 frames.
+// Writes captures/stream_sheet.jpg: what the "iPad" sent (left) and got back (right), 4 frames, and
+// captures/stream_grow_sheet.jpg: the same in grow mode, switched on with the iPad's own button.
 // Both pages run on this Mac, so this says nothing about Wi-Fi; that needs the real iPad.
 //
 // Codec: the pages prefer H.264, but in headless Chrome the fake camera stops delivering frames
@@ -127,9 +128,13 @@ try {
   console.log(`route ${first.link.route} · codec ${first.link.codec}`);
 
   // 2. Each fill mode: Mac speed, what the iPad shows, round trip.
+  //    Then grow mode, switched on with the iPad's button.
   const rows = [];
-  for (const fill of ['migan', 'telea', 'stylised']) {
-    await mac.evaluate((f) => window.deviceRemover.store.set('fill', f), fill);
+  for (const fill of ['migan', 'telea', 'stylised', 'grow']) {
+    if (fill === 'grow') {
+      await tapMode('grow');
+      await sleep(4000); // it has grown to full size by the time it is measured
+    } else await mac.evaluate((f) => window.deviceRemover.store.set('fill', f), fill);
     await sleep(2500);
     await ipad.evaluate(() => window.streamPage.resetLatency());
     await sleep(6000);
@@ -154,24 +159,37 @@ try {
     problems.push('no round-trip samples for at least one fill mode (bar code unreadable?)');
   }
 
-  // 3. A look: sent vs. received.
+  // 3. A look: sent vs. received. First grow (still on), then back to remove with the iPad's button.
+  await writeSheet('stream_grow_sheet.jpg');
+  await tapMode('remove');
   await mac.evaluate(() => window.deviceRemover.store.set('fill', 'migan'));
   await sleep(2500);
-  const sheet = await ipad.evaluate(async () => {
-    const urls = [];
-    for (let k = 0; k < 4; k++) {
-      urls.push(window.streamPage.grab());
-      await new Promise((r) => setTimeout(r, 400));
-    }
-    const imgs = await Promise.all(urls.map((u) => new Promise((r) => Object.assign(new Image(), { onload: (e) => r(e.target), src: u }))));
-    const c = document.createElement('canvas');
-    c.width = imgs[0].width;
-    c.height = imgs[0].height * imgs.length;
-    imgs.forEach((im, k) => c.getContext('2d').drawImage(im, 0, k * im.height));
-    return c.toDataURL('image/jpeg', 0.85);
-  });
-  writeFileSync(join(outDir, 'stream_sheet.jpg'), Buffer.from(sheet.split(',')[1], 'base64'));
-  console.log('wrote captures/stream_sheet.jpg (left: sent, right: received)');
+  await writeSheet('stream_sheet.jpg');
+
+  /** Tap Remove or Grow in the iPad's panel; the Mac must follow and the iPad must show it. */
+  async function tapMode(mode) {
+    await ipad.evaluate((m) => [...document.querySelectorAll('.modes .btn')].find((b) => b.textContent.toLowerCase() === m).click(), mode);
+    await until(mac, (m) => window.deviceRemover.store.value.mode === m, mode, Date.now(), 5000);
+    await until(ipad, (m) => window.streamPage.mode() === m && document.querySelector('.modes .chosen')?.textContent.toLowerCase() === m, mode, Date.now(), 5000);
+  }
+
+  async function writeSheet(file) {
+    const sheet = await ipad.evaluate(async () => {
+      const urls = [];
+      for (let k = 0; k < 4; k++) {
+        urls.push(window.streamPage.grab());
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      const imgs = await Promise.all(urls.map((u) => new Promise((r) => Object.assign(new Image(), { onload: (e) => r(e.target), src: u }))));
+      const c = document.createElement('canvas');
+      c.width = imgs[0].width;
+      c.height = imgs[0].height * imgs.length;
+      imgs.forEach((im, k) => c.getContext('2d').drawImage(im, 0, k * im.height));
+      return c.toDataURL('image/jpeg', 0.85);
+    });
+    writeFileSync(join(outDir, file), Buffer.from(sheet.split(',')[1], 'base64'));
+    console.log(`wrote captures/${file} (left: sent, right: received)`);
+  }
 
   // 4. Interruptions: time until the "iPad" shows new frames again.
   if (recovery) {

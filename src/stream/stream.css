@@ -80,3 +80,25 @@
     opacity: 0.2;
   }
 }
+
+/* Remove / Grow: two buttons side by side, the one in use filled. */
+.modes {
+  display: flex;
+  gap: 6px;
+}
+
+.modes .btn {
+  flex: 1;
+  margin: 4px 0 0;
+}
+
+.modes .btn.chosen {
+  background: #ddd;
+  border-color: #ddd;
+  color: #111;
+}
+
+.modes .btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

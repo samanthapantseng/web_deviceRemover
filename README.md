@@ -104,8 +104,8 @@ Access). For the cable, also set the fixed addresses once ("Streaming over an Et
 
    Allow the camera. After a few seconds the picture appears, phones removed (or growing, in
    grow mode), and Terminal window 1 prints `[stream] iPad page connected from …` with the
-   iPad's address (`192.168.77.2` over the cable). Double-tap for the iPad's own small panel
-   (it has Screenshot and Record buttons).
+   iPad's address (`192.168.77.2` over the cable). Double-tap for the iPad's own small panel:
+   **Remove** / **Grow**, Screenshot, Record.
 
 To stop: Ctrl-C in both Terminal windows. Over Wi-Fi the address changes on another network;
 step 1 always prints the current one. Over the cable it stays `192.168.77.1`, so a Safari
@@ -232,11 +232,18 @@ only what comes back from the Mac, so phones stay hidden even while things start
 the same Wi-Fi (your own small travel router or a phone hotspot is better than venue Wi-Fi, see
 below), or one Ethernet cable between them (see "Streaming over an Ethernet cable"). The order
 does not matter, and either side can be reloaded at any time: the iPad reconnects by itself.
-Settings for the mode (remove / grow), the fill and the detector are made on the Mac (`D` for
-the panel). On the iPad, double-tap for its own small panel: screenshot, screen recording,
-camera front/back, mirror, fill the screen, reconnect, and the connection's numbers.
+Settings for the fill, the detector and grow mode (sizes, time, shape) are made on the Mac (`D`
+for the panel). On the iPad, double-tap for its own small panel: the mode, screenshot, screen
+recording, camera front/back, mirror, fill the screen, reconnect, and the connection's numbers.
 
-**Screenshot on the iPad**: the panel's first button (or `S` on a keyboard). The same picture
+**Remove or grow, from the iPad**: the two buttons at the top of the panel (or `G` on a
+keyboard). The mode is the Mac's, the same one `G` changes there: the iPad asks the Mac and the
+filled button is what the Mac says it is doing, whichever side changed it. It stays when either
+page is reloaded, and after a reconnect. Without a connection the buttons are greyed out. Hijack
+mode can't be chosen there (its sound plays on the Mac); if the Mac is in it, the panel says so.
+The request goes over the same direct connection as the video.
+
+**Screenshot on the iPad**: **Screenshot** in the panel (or `S` on a keyboard). The same picture
 as `S` on the Mac: before and after of the same frame, side by side, the whole camera frame
 (not cropped to the screen), each half mirrored like the iPad shows it. The Mac makes it and
 sends it back over the same direct connection as the video (not through the dev server). A
@@ -304,6 +311,11 @@ iPad's camera, VP8; Wi-Fi not included):
 Picture back after: iPad page reloaded 0.3 s; connection dead without notice 4.6 s; the iPad
 stopped sending (only the Mac can notice) 4.7 s; Mac page reloaded 0.6 s; Mac page closed for
 10 s and reopened 1.1 s. A camera restart on the iPad keeps the connection.
+
+Grow mode, the same set-up (23 Nov, the Mac on battery): 29 fps on the "iPad", 30 cut-outs a
+second, round trip 85 ms median (86); MI-GAN the same evening 84 ms (87). After a few minutes of
+tests at 20 % battery the Mac's model slowed from 22 to 56 ms, in both modes, and grow to 15 a
+second.
 
 **Measured on the real iPad** (18 Nov, real Wi-Fi, H.264, 3 Mbit/s, `?latency`): round trip
 177 ms median (202 ms for 95 %). On calm Wi-Fi most of that is fixed steps: compressing and
@@ -609,8 +621,8 @@ Limits:
   low-resolution image.
 - The hand shape is tested on photos (two webcam stills, two stock photos) and the moving test
   clip, not yet live with a real person.
-- Not yet tested in streaming mode. The Mac runs grow mode the same way there (the same
-  pipeline); the iPad only shows the result.
+- In streaming mode it is tested with two pages on this Mac (see "Streaming mode"), not yet on
+  the real iPad.
 
 ## Hijack mode
 
@@ -797,6 +809,7 @@ src/
   stream/            streaming mode: ipad.ts (the iPad's page), remoteSource.ts (the Mac's
                      side), link.ts (WebRTC set-up, statistics), signal.ts, latency.ts,
                      shots.ts (the iPad's before/after screenshot, made on the Mac),
+                     modeLink.ts (the iPad's Remove / Grow switch),
                      screen.ts (fullscreen and keeping the iPad awake)
   recorder.ts        screen recording of the "after" picture (Mac page and iPad stream page)
 server/
