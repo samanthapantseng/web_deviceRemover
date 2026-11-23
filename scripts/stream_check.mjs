@@ -2,7 +2,7 @@
 // like two devices: one plays the iPad (a video file as its camera, an iPad user agent and touch,
 // on /stream.html?latency), the other the Mac (/?source=stream). Prints speed and round-trip
 // latency per fill mode, and how long the picture takes to come back after each interruption.
-// Then hijack mode, switched on with the iPad's own button: the sound has to play on the iPad
+// Then hijack mode, switched on with the iPad's own controls: the sound has to play on the iPad
 // page (measured, not heard) and not on the Mac's, and come back after interruptions.
 //
 //   npm run dev:ipad                                                   # in another terminal
@@ -13,7 +13,7 @@
 //   BASE=https://localhost:8444/ npm run check:stream -- ...           # another server
 //
 // Writes captures/stream_sheet.jpg: what the "iPad" sent (left) and got back (right), 4 frames, and
-// captures/stream_grow_sheet.jpg: the same in grow mode, switched on with the iPad's own button.
+// captures/stream_grow_sheet.jpg: the same in grow mode, switched on with the iPad's own controls.
 // Both pages run on this Mac, so this says nothing about Wi-Fi; that needs the real iPad.
 //
 // Codec: the pages prefer H.264, but in headless Chrome the fake camera stops delivering frames
@@ -132,7 +132,7 @@ try {
   console.log(`route ${first.link.route} · codec ${first.link.codec}`);
 
   // 2. Each fill mode: Mac speed, what the iPad shows, round trip.
-  //    Then grow mode, switched on with the iPad's button.
+  //    Then grow mode, switched on with the iPad's mode slider.
   const rows = [];
   for (const fill of hijackOnly ? [] : ['migan', 'telea', 'stylised', 'grow']) {
     if (fill === 'grow') {
@@ -163,7 +163,7 @@ try {
     problems.push('no round-trip samples for at least one fill mode (bar code unreadable?)');
   }
 
-  // 3. A look: sent vs. received. First grow (still on), then back to remove with the iPad's button.
+  // 3. A look: sent vs. received. First grow (still on), then back to remove with the iPad's mode slider.
   if (!hijackOnly) {
     await writeSheet('stream_grow_sheet.jpg');
     await tapMode('remove');
@@ -172,11 +172,15 @@ try {
     await writeSheet('stream_sheet.jpg');
   }
 
-  /** Tap Remove, Grow or Hijack in the iPad's panel; the Mac must follow and the iPad must show it. */
+  /** Tap a name on the iPad's mode slider; the Mac must follow and the iPad must show it. */
   async function tapMode(mode) {
-    await ipad.evaluate((m) => [...document.querySelectorAll('.modes .btn')].find((b) => b.textContent.toLowerCase() === m).click(), mode);
+    const at = await ipad.evaluate((m) => {
+      const r = document.querySelector(`.cam-dial [data-mode=${m}]`).getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, mode);
+    await ipad.touchscreen.tap(at.x, at.y);
     await until(mac, (m) => window.deviceRemover.store.value.mode === m, mode, Date.now(), 5000);
-    await until(ipad, (m) => window.streamPage.mode() === m && document.querySelector('.modes .chosen')?.textContent.toLowerCase() === m, mode, Date.now(), 5000);
+    await until(ipad, (m) => window.streamPage.mode() === m && document.querySelector('.cam-dial [aria-checked=true]')?.dataset.mode === m, mode, Date.now(), 5000);
   }
 
   async function writeSheet(file) {
@@ -414,4 +418,5 @@ try {
 
 console.log(problems.length ? `problems:\n  ${problems.join('\n  ')}` : 'no console errors');
 exitCode = problems.length ? 1 : 0;
-process.exitCode = exitCode;
+// Not left to Node: sometimes something of the closed browsers keeps it from ending by itself.
+process.exit(exitCode);

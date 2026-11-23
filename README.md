@@ -62,8 +62,14 @@ Do "iPad: before the first time" below once. Then, each time:
      for example `https://10.21.12.136:8443/stream.html`
    - **Ethernet cable** (the iPad's Wi-Fi off): `https://192.168.77.1:8443/stream.html`
 
-Double-tap the iPad for its panel: Remove / Grow / Hijack, screenshot, record, camera, mirror. In
-hijack mode the sound plays on the iPad, so the headphones go there; if it says "tap for sound",
+On the iPad, all in reach of the right thumb:
+
+- **Remove / Grow / Hijack**: swipe up or down anywhere on the right side (or tap a name).
+- **Shutter**: tap for a screenshot. Hold to start recording (it goes on when you let go), tap to stop.
+- **Arrows** above it: front / back camera.
+- **Double-tap** the picture: panel with the rest (mirror, fill screen, reconnect, numbers).
+
+In hijack mode the sound plays on the iPad, so the headphones go there; if it says "tap for sound",
 tap once. Ctrl-C in both Terminal windows stops everything.
 
 ## iPad: before the first time

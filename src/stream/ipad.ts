@@ -3,8 +3,10 @@
  * screen, the picture the Mac sends back. Nothing is processed here, and the iPad's own camera
  * picture is never shown: only finished frames from the Mac.
  *
- * The panel's Remove / Grow / Hijack switch sets the Mac's mode (modeLink.ts). In hijack mode
- * this page makes the sound: the Mac says who is in focus (soundLink.ts).
+ * The controls on the picture (controls.ts): front / back camera, the shutter (tap: screenshot,
+ * hold: recording) and the Remove / Grow / Hijack slider, which sets the Mac's mode (modeLink.ts).
+ * Everything else is in the panel (double-tap). In hijack mode this page makes the sound: the Mac
+ * says who is in focus (soundLink.ts).
  *
  * This page drives recovery. It starts a fresh connection whenever the Mac page appears, the
  * connection fails, or no frame has arrived for 3 s, and keeps trying for as long as it is open.
@@ -24,8 +26,9 @@ import { downloadBlob, timestamp } from '../snapshot';
 import { noZoom } from '../ui/noZoom';
 import { isTouchDevice } from '../ui/panel';
 import { codecFromUrl, describeLink, LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
+import { Controls } from './controls';
 import { Stamper, StampReader } from './latency';
-import { IPAD_MODES, MODE_CHANNEL, ModeClient, type IpadMode } from './modeLink';
+import { MODE_CHANNEL, ModeClient, type IpadMode } from './modeLink';
 import { ScreenRecorder } from '../recorder';
 import { keepScreenOn, toggleFullscreen } from './screen';
 import { SHOT_CHANNEL, ShotClient } from './shots';
@@ -187,9 +190,6 @@ async function screenshot(): Promise<void> {
  */
 const recorder = new ScreenRecorder();
 const recordMax = Number(params.get('recordMax')) || 300;
-/** Small and quiet, like the reconnect indicator: whoever runs the piece can see it is recording. */
-const recIndicator = el('div', 'hidden');
-recIndicator.id = 'rec';
 recorder.onChange = () => updateRecordUi();
 recorder.onFile = (file) => {
   report('status', { text: `recording saved: ${file.name}, ${(file.size / 2 ** 20).toFixed(1)} MB` });
@@ -225,11 +225,8 @@ function toggleRecording(): void {
 function updateRecordUi(): void {
   const t = recorder.seconds;
   const time = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
-  recordButton.textContent = recorder.recording ? `Stop recording · ${time}` : 'Record';
-  recordButton.classList.toggle('recording', recorder.recording);
+  controls.setRecording(recorder.recording, time);
   saveRecordingButton.classList.toggle('gone', recorder.recording || !recorder.last);
-  recIndicator.textContent = `REC ${time}`;
-  recIndicator.classList.toggle('hidden', !recorder.recording);
 }
 setInterval(() => recorder.recording && updateRecordUi(), 500);
 
@@ -250,15 +247,16 @@ const togglePanel = () => panel.classList.toggle('hidden');
 /** A short white flash over the picture when a screenshot is taken. */
 const flash = el('div');
 flash.id = 'shot-flash';
-document.body.append(flash, saveButton, recIndicator);
+/** Black over the picture while the camera is switched. */
+const dip = el('div');
+dip.id = 'dip';
+document.body.append(dip, flash, saveButton);
 function addAction(label: string, run: () => void): HTMLButtonElement {
   const b = el('button', 'btn', label);
   b.onclick = run;
   actions.append(b);
   return b;
 }
-addAction('Screenshot', () => void screenshot());
-const recordButton = addAction('Record', toggleRecording);
 /** In case the download did not happen: the last recording stays until the next one starts. */
 const saveRecordingButton = addAction('Save last recording', () => recorder.last && downloadBlob(recorder.last, recorder.last.name));
 saveRecordingButton.classList.add('gone');
@@ -282,69 +280,36 @@ sound.onChange = () => {
   updateSound();
 };
 for (const type of ['touchend', 'click', 'keydown'] as const) {
-  document.addEventListener(type, () => modes.mode === 'hijack' && sound.ensure(true), { capture: true });
+  // Also for the swipe that asks for hijack mode, before the Mac has answered.
+  document.addEventListener(type, () => (modes.mode === 'hijack' || controls.wanted === 'hijack') && sound.ensure(true));
 }
 
-// Remove or grow the phones, or listen to them. The mode is the Mac's; the switch shows what the
+// The controls on the picture. The mode is the Mac's: the slider asks for one and shows what the
 // Mac says it is in.
 const modes = new ModeClient();
-{
-  const row = el('div', 'row');
-  const head = el('div', 'row-head');
-  const value = el('span', 'value');
-  head.append(el('span', undefined, 'Mode'), value);
-  const group = el('div', 'modes');
-  const labels = { remove: 'Remove', grow: 'Grow', hijack: 'Hijack' };
-  const buttons = IPAD_MODES.map((mode) => {
-    const b = el('button', 'btn', labels[mode]);
-    b.onclick = () => {
-      // Still within the tap: Safari lets the sound start.
-      if (mode === 'hijack') sound.ensure(true);
-      askMode(mode);
-    };
-    group.append(b);
-    return { mode, b };
-  });
-  modes.onChange = () => {
-    for (const { mode, b } of buttons) {
-      b.disabled = modes.mode === null;
-      b.classList.toggle('chosen', modes.mode === mode);
-      b.setAttribute('aria-pressed', String(modes.mode === mode));
-    }
-    value.textContent = modes.mode === null ? 'no connection to the Mac' : '';
-    if (modes.mode === 'hijack') sound.ensure();
-    updateSound();
-  };
-  modes.onChange();
-  row.append(head, group);
-  panel.insertBefore(row, actions);
-}
+const controls = new Controls({
+  screenshot: () => void screenshot(),
+  startRecording: toggleRecording,
+  stopRecording: () => recorder.stop(),
+  recording: () => recorder.recording,
+  flip: () => void flipCamera(),
+  mode: askMode,
+});
+document.body.append(controls.root, controls.timer);
+modes.onChange = () => {
+  controls.setMode(modes.mode);
+  if (modes.mode === 'hijack') sound.ensure();
+  updateSound();
+};
+modes.onChange();
 
-function askMode(mode: IpadMode): void {
-  if (!modes.request(mode)) note('the mode is set on the Mac: no connection to it right now');
+function askMode(mode: IpadMode): boolean {
+  if (modes.request(mode)) return true;
+  note('the mode is set on the Mac: no connection to it right now');
+  return false;
 }
-{
-  const row = el('label', 'row');
-  const head = el('div', 'row-head');
-  head.append(el('span', undefined, 'Camera (reloads)'));
-  const select = el('select');
-  for (const f of ['front', 'back'] as const) {
-    const o = el('option', undefined, f);
-    o.value = f;
-    select.append(o);
-  }
-  select.value = prefs.camera;
-  select.onchange = () => {
-    prefs.camera = select.value as Facing;
-    prefs.mirror = prefs.camera === 'front';
-    savePrefs();
-    const p = new URLSearchParams(location.search);
-    p.delete('camera');
-    location.search = p.toString();
-  };
-  row.append(head, select);
-  panel.append(row);
-}
+/** The panel's checkboxes, to show a change made elsewhere (the camera switch sets the mirror). */
+const checks = new Map<'mirror' | 'cover', HTMLInputElement>();
 for (const [key, label] of [
   ['mirror', 'Mirror'],
   ['cover', 'Fill screen (crop edges)'],
@@ -353,6 +318,7 @@ for (const [key, label] of [
   const input = el('input');
   input.type = 'checkbox';
   input.checked = prefs[key];
+  checks.set(key, input);
   input.onchange = () => {
     prefs[key] = input.checked;
     savePrefs();
@@ -361,17 +327,25 @@ for (const [key, label] of [
   row.append(input, el('span', undefined, label));
   panel.append(row);
 }
-panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · G remove / grow · H hijack · S screenshot · V record · F fullscreen · R reconnect'));
+panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · G remove / grow · H hijack · C camera · S screenshot · V record · F fullscreen · R reconnect'));
 document.body.append(panel);
 
-let lastTap = 0;
+// Double-tap: two taps in the same place (two thumbs tapping at once are not one), not on the
+// controls and not at the end of a swipe or a long touch.
+let lastTap = { t: 0, x: 0, y: 0 };
+const touched = new Map<number, { t: number; x: number; y: number }>();
+document.addEventListener('pointerdown', (e) => touched.set(e.pointerId, { t: e.timeStamp, x: e.clientX, y: e.clientY }));
+document.addEventListener('pointercancel', (e) => touched.delete(e.pointerId));
 document.addEventListener('pointerup', (e) => {
-  if (e.pointerType === 'mouse' || panel.contains(e.target as Node)) return;
-  if (e.timeStamp - lastTap < 350) {
+  const from = touched.get(e.pointerId);
+  touched.delete(e.pointerId);
+  if (e.pointerType === 'mouse' || !from || panel.contains(e.target as Node) || controls.owns(e)) return;
+  if (e.timeStamp - from.t > 300 || Math.hypot(e.clientX - from.x, e.clientY - from.y) > 20) return;
+  if (e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 60) {
     togglePanel();
-    lastTap = 0;
+    lastTap = { t: 0, x: 0, y: 0 };
   } else {
-    lastTap = e.timeStamp;
+    lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
   }
 });
 window.addEventListener('keydown', (e) => {
@@ -382,7 +356,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'h') {
     sound.ensure(true);
     askMode(modes.mode === 'hijack' ? 'remove' : 'hijack');
-  }
+  } else if (k === 'c') void flipCamera();
   else if (k === 's') void screenshot();
   else if (k === 'v') toggleRecording();
   else if (k === 'f') toggleFullscreen();
@@ -671,8 +645,20 @@ function openCamera(): Promise<MediaStream> {
 
 function useCamera(stream: MediaStream): void {
   cam = stream;
-  camTrack = stream.getVideoTracks()[0];
-  camTrack.addEventListener('ended', () => void restartCamera('the camera track ended'));
+  const track = (camTrack = stream.getVideoTracks()[0]);
+  // Only the one in use: switching cameras ends the other one.
+  track.addEventListener('ended', () => track === camTrack && void restartCamera('the camera track ended'));
+}
+
+/** Put the camera in use (cam) into the connection and everything that looks at it. */
+async function attachCamera(): Promise<void> {
+  local!.srcObject = cam;
+  await local!.play();
+  cameraFrameAt = performance.now();
+  if (stamper || !camTrack) return; // the latency test keeps sending its canvas, which draws the new camera
+  sendTrack = camTrack;
+  sendStream = new MediaStream([camTrack]);
+  await transceiver?.sender.replaceTrack(camTrack);
 }
 
 /**
@@ -693,20 +679,62 @@ async function restartCamera(reason = 'the camera stopped delivering frames'): P
     const old = cam;
     useCamera(await openCamera());
     old?.getTracks().forEach((t) => t.stop());
-    local.srcObject = cam;
-    await local.play();
-    cameraFrameAt = performance.now();
-    if (!stamper && camTrack) {
-      // The latency test keeps sending its canvas, which now draws the new camera.
-      sendTrack = camTrack;
-      sendStream = new MediaStream([camTrack]);
-      await transceiver?.sender.replaceTrack(camTrack);
-    }
+    await attachCamera();
   } catch (err) {
     console.error('[stream] could not restart the camera, reloading', err);
     setTimeout(() => location.reload(), 1000);
   } finally {
     restartingCamera = false;
+  }
+}
+
+/** How long the picture stays black after the new camera is in: until its frames come back from the Mac. */
+const FLIP_WAIT_MS = 500;
+
+/**
+ * Front ↔ back, without reloading the page (the connection and the sound go on). The picture goes
+ * black for it, so the mirror changes unseen together with the camera.
+ */
+async function flipCamera(): Promise<void> {
+  if (restartingCamera || stopped || !local) return;
+  restartingCamera = true;
+  const from = prefs.camera;
+  const use = (facing: Facing) => {
+    prefs.camera = facing;
+    prefs.mirror = facing === 'front';
+  };
+  dip.classList.add('on');
+  try {
+    await new Promise((r) => setTimeout(r, 160)); // the fade to black
+    // iPadOS runs one camera at a time.
+    cam?.getTracks().forEach((t) => t.stop());
+    use(from === 'front' ? 'back' : 'front');
+    try {
+      useCamera(await openCamera());
+    } catch (err) {
+      report('status', { text: `no ${prefs.camera} camera: ${(err as Error).message}`, isError: true });
+      note(`the ${prefs.camera} camera is not available`);
+      use(from);
+      useCamera(await openCamera());
+    }
+    await attachCamera();
+    savePrefs();
+    applyLayout();
+    checks.get('mirror')!.checked = prefs.mirror;
+    // A camera named in the address would win over the saved one at the next reload.
+    const p = new URLSearchParams(location.search);
+    if (p.has('camera')) {
+      p.delete('camera');
+      history.replaceState(null, '', `${location.pathname}${p.size ? `?${p}` : ''}`);
+    }
+    report('status', { text: `camera switched to ${prefs.camera}` });
+    await new Promise((r) => setTimeout(r, FLIP_WAIT_MS));
+  } catch (err) {
+    console.error('[stream] could not switch the camera, reloading', err);
+    setTimeout(() => location.reload(), 1000);
+  } finally {
+    restartingCamera = false;
+    dip.classList.remove('on');
   }
 }
 

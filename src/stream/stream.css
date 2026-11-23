@@ -15,6 +15,20 @@
   display: none;
 }
 
+/* While the camera is switched. */
+#dip {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+
+#dip.on {
+  opacity: 1;
+}
+
 /* Screenshot taken: a short white flash over the picture, like a camera. */
 #shot-flash {
   position: fixed;
@@ -52,10 +66,16 @@
   display: none;
 }
 
+/* The panel, out of the way of the controls on the right. */
+.panel {
+  left: calc(12px + env(safe-area-inset-left, 0px));
+  right: auto;
+}
+
 /* Small and quiet: visible to whoever runs the piece, easy to miss for visitors. */
 #outage {
   position: fixed;
-  right: 14px;
+  left: 14px;
   bottom: 12px;
   display: flex;
   align-items: center;
@@ -81,24 +101,224 @@
   }
 }
 
-/* Remove / Grow: two buttons side by side, the one in use filled. */
-.modes {
-  display: flex;
-  gap: 6px;
+/* ------------------------------------------------------------------ the controls (controls.ts)
+   One column on the right, like a camera app, in reach of the right thumb. Sizes are in --u: one
+   pixel, a little less where the screen is low (a small iPad, or Safari's bars). */
+
+.cam {
+  --u: 1px;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  right: env(safe-area-inset-right, 0px);
+  width: calc(var(--u) * 148);
+  pointer-events: none;
+  font: 500 15px/1 -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  color: #fff;
 }
 
-.modes .btn {
-  flex: 1;
-  margin: 4px 0 0;
+@media (max-height: 740px) {
+  .cam {
+    --u: 0.86px;
+  }
 }
 
-.modes .btn.chosen {
-  background: #ddd;
-  border-color: #ddd;
-  color: #111;
+@media (max-height: 620px) {
+  .cam {
+    --u: 0.72px;
+  }
 }
 
-.modes .btn:disabled {
+.cam button {
+  position: absolute;
+  left: 50%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+.cam button:focus-visible {
+  outline: 2px solid #ffd60a;
+  outline-offset: 3px;
+}
+
+.cam .cam-flip {
+  top: calc(50% - var(--u) * 102);
+  width: calc(var(--u) * 58);
+  height: calc(var(--u) * 58);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(34, 31, 29, 0.6);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+/* A bigger target than it looks. */
+.cam-flip::after,
+.cam-shutter::after {
+  content: '';
+  position: absolute;
+  inset: calc(var(--u) * -12);
+  border-radius: 50%;
+}
+
+.cam-flip svg {
+  width: 64%;
+  height: 64%;
+  transform: rotate(var(--turn, 0deg));
+  transition: transform 0.45s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+.cam .cam-flip.pressing {
+  background: rgba(80, 74, 70, 0.75);
+}
+
+.cam-shutter {
+  top: 50%;
+  width: calc(var(--u) * 84);
+  height: calc(var(--u) * 84);
+  transform: translate(-50%, -50%);
+}
+
+.cam-shutter svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke-width: 5;
+  transform: rotate(-90deg);
+}
+
+.cam-shutter .rim {
+  stroke: rgba(255, 255, 255, 0.42);
+}
+
+/* Fills up while the button is held, until the recording starts. */
+.cam-shutter .hold {
+  stroke: #ff3b30;
+  stroke-dasharray: 245.1;
+  stroke-dashoffset: 245.1;
+  transition: stroke-dashoffset 0.12s;
+}
+
+.cam-shutter.pressing .hold {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 0.31s linear 0.14s;
+}
+
+.cam-shutter i {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: calc(var(--u) * 68);
+  height: calc(var(--u) * 68);
+  border-radius: calc(var(--u) * 34);
+  background: #fff;
+  transition: all 0.2s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+.cam-shutter.pressing i {
+  transform: scale(0.9);
+}
+
+.cam-shutter.recording .rim {
+  stroke: #fff;
+}
+
+.cam-shutter.recording .hold {
+  stroke-dashoffset: 245.1;
+  transition: none;
+}
+
+.cam-shutter.recording i {
+  width: calc(var(--u) * 34);
+  height: calc(var(--u) * 34);
+  border-radius: calc(var(--u) * 9);
+  background: #ff3b30;
+}
+
+/* The mode slider: the pill stands still, the names move through it. */
+.cam-dial {
+  --pitch: calc(var(--u) * 50);
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(50% + var(--u) * 214);
+  height: 0;
+  transition: opacity 0.3s;
+}
+
+.cam-dial.offline {
   opacity: 0.4;
-  cursor: default;
+}
+
+.cam-dial .pill {
+  position: absolute;
+  left: 50%;
+  width: calc(var(--u) * 108);
+  height: calc(var(--u) * 44);
+  transform: translate(-50%, -50%);
+  border-radius: calc(var(--u) * 22);
+  background: rgba(52, 47, 43, 0.62);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.cam-dial .list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--pitch) / -2);
+  transform: translateY(calc(var(--at, 0) * var(--pitch) * -1));
+  transition: transform 0.28s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.cam-dial.dragging .list {
+  transition: none;
+}
+
+.cam-dial button {
+  position: static;
+  display: block;
+  width: 100%;
+  height: var(--pitch);
+  font-size: max(13px, calc(var(--u) * 16));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-shadow: 0 0 5px rgba(0, 0, 0, 0.65);
+  transition: color 0.15s;
+}
+
+.cam-dial button[aria-checked='true'] {
+  color: #ffd60a;
+  text-shadow: none;
+}
+
+/* Recording time, top centre. Messages move down a little meanwhile. */
+.cam-timer {
+  position: fixed;
+  left: 50%;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 7px;
+  background: #ff3b30;
+  color: #fff;
+  font: 500 18px/1.2 -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+body.recording #status {
+  top: 60px;
 }
