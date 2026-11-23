@@ -1,27 +1,27 @@
-// Hijack mode's sound: one voice per person in focus, through a shared room and a limiter.
+// Hijack mode's sound: the conversation of the person in focus, through a shared room and a limiter.
 //
-//   voice ─┬─ dry ──────────────┐
-//          └─ send → reverb ────┴→ volume → limiter → soft clip → ceiling → headphones
-//                                                                   ├→ meter (levels for the panel)
-//                                                                   └→ recording (only if asked)
+//   conversation ─┬─ dry ───────────┐
+//                 └─ send → room ───┴→ volume → limiter → soft clip → ceiling → headphones
+//                                                                       ├→ meter (levels for the panel)
+//                                                                       └→ recording (only if asked)
 //
 // The limiter, the soft clip and the ceiling are there so that nothing (a bug, a resonating
-// filter, many voices at once) can ever be louder than the ceiling: about -2 dB below full scale,
+// filter, many people at once) can ever be louder than the ceiling: about -2 dB below full scale,
 // at any volume setting.
 //
-// Around each voice the engine adds the outside world, for a moment only (silence otherwise):
+// Around each conversation the engine adds the outside world, for a moment only (silence otherwise):
 // breaking in, the low rumble of the carriage is heard under the stuttering signal and is cut
 // off when the seal closes (a soft thump and the hiss of noise cancelling); pushed out, the
 // rumble comes back for a moment before the silence.
 //
 // The engine works on a live AudioContext (LiveSound below) and on an OfflineAudioContext (the
 // test renders sound files with it, faster than real time).
-import type { CharacterId } from '../settings';
-import { BREAK_IN_S, clamp01, makeVoice, type Kit, type Voice, type VoiceParams } from './voices';
+import type { SceneId } from '../settings';
+import { BREAK_IN_S, clamp01, Conversation, type Kit, type VoiceParams } from './conversation';
 
 /** Highest possible output sample value (0.8 = -1.9 dBFS). */
 export const CEILING = 0.8;
-/** How far ahead (s) rhythmic events are scheduled, and how often the scheduler runs (ms). */
+/** How far ahead (s) what is said is scheduled, and how often the scheduler runs (ms). */
 const LOOKAHEAD = 0.3;
 const TICK_MS = 50;
 /** Without any update for this long (the camera stopped, the tab hidden), the sound fades out. */
@@ -45,8 +45,8 @@ export class SoundEngine {
   private meter: AnalyserNode;
   private meterData: Float32Array<ArrayBuffer>;
   private recordDest: MediaStreamAudioDestinationNode | null = null;
-  private voices = new Set<Voice>();
-  private current: Voice | null = null;
+  private voices = new Set<Conversation>();
+  private current: Conversation | null = null;
   private currentKey = '';
   private lastUpdate = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -72,7 +72,7 @@ export class SoundEngine {
     this.final.connect(this.meter);
   }
 
-  /** Live use: schedule rhythmic events ahead and run the watchdog, on a timer. */
+  /** Live use: schedule what is said ahead and run the watchdog, on a timer. */
   startClock(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
@@ -85,22 +85,22 @@ export class SoundEngine {
     this.volume.gain.setTargetAtTime(volumeGain(v), this.ctx.currentTime, 0.1);
   }
 
-  /** The key of the voice in focus ('' when silent). */
+  /** The key of the conversation in focus ('' when silent). */
   get focusKey(): string {
     return this.currentKey;
   }
 
   /**
-   * Listen to someone: `key` identifies them (and their character), `elapsed` is how long
-   * (s) their sound has been playing already. The same key again only updates the numbers; a
-   * new key pushes the old voice out while the new one breaks in.
+   * Listen to someone: `key` identifies them (and their conversation), `elapsed` is how long
+   * (s) it has been going on already. The same key again only updates the numbers; a new key
+   * pushes the old one out while the new one breaks in.
    */
-  focus(key: string, character: CharacterId, seed: number, p: VoiceParams, elapsed = 0, at = this.ctx.currentTime): void {
+  focus(key: string, scene: SceneId, seed: number, p: VoiceParams, elapsed = 0, at = this.ctx.currentTime): void {
     this.lastUpdate = performance.now();
     if (key === this.currentKey && this.current) return this.current.set(p, at);
     const switching = !!this.current;
     this.release(at, !switching);
-    const v = makeVoice(character, this.kit, seed, this.dry, this.wet);
+    const v = new Conversation(scene, this.kit, seed, this.dry, this.wet);
     v.start(p, at, elapsed);
     this.breakIn(at);
     this.voices.add(v);
@@ -109,13 +109,13 @@ export class SoundEngine {
     v.schedule(at + LOOKAHEAD);
   }
 
-  /** New numbers for the voice in focus. */
+  /** New numbers for the conversation in focus. */
   update(p: VoiceParams, at = this.ctx.currentTime): void {
     this.lastUpdate = performance.now();
     this.current?.set(p, at);
   }
 
-  /** Push out of the voice in focus: back to silence (with `outside`, through a moment of the rumble). */
+  /** Push out of the conversation in focus: back to silence (with `outside`, through a moment of the rumble). */
   release(at = this.ctx.currentTime, outside = true): void {
     if (!this.current) return;
     this.current.tuneOut(at);
@@ -124,11 +124,11 @@ export class SoundEngine {
     this.currentKey = '';
   }
 
-  /** Play a character for a few seconds without a phone (the panel's "Test sound"). */
-  preview(character: CharacterId, seed: number, seconds = 5): void {
+  /** Play a conversation for a few seconds without a phone (the panel's "Test sound"). */
+  preview(scene: SceneId, seed: number, seconds = 10): void {
     const at = this.ctx.currentTime + 0.05;
-    const v = makeVoice(character, this.kit, seed, this.dry, this.wet);
-    v.start({ pan: 0, clarity: 1, closeness: 0.7, build: 0.6, activity: 0.3 }, at, Math.random() * 90);
+    const v = new Conversation(scene, this.kit, seed, this.dry, this.wet);
+    v.start({ pan: 0, clarity: 1, closeness: 0.7, build: 0.3, activity: 0.1 }, at, Math.random() * 90);
     v.tuneOut(at + seconds);
     this.breakIn(at);
     this.pushOut(at + seconds);
@@ -136,7 +136,7 @@ export class SoundEngine {
     v.schedule(at + LOOKAHEAD);
   }
 
-  /** Schedule every voice's rhythmic events up to `until`, and let finished voices go. */
+  /** Schedule what everyone says up to `until`, and let finished conversations go. */
   scheduleUntil(until: number): void {
     const now = this.ctx.currentTime;
     for (const v of this.voices) {
@@ -176,7 +176,7 @@ export class SoundEngine {
     const seal = at + BREAK_IN_S;
     const rumble = this.rumbleAt(at, seal + 0.3);
     rumble.setValueAtTime(0, at);
-    rumble.setTargetAtTime(0.22, at, 0.08);
+    rumble.setTargetAtTime(0.1, at, 0.08);
     rumble.setTargetAtTime(0, seal, 0.02);
     // The thump of the seal: a soft, very low knock.
     const knock = new OscillatorNode(ctx, { frequency: 70 });
@@ -184,7 +184,7 @@ export class SoundEngine {
     knock.frequency.setValueAtTime(70, seal);
     knock.frequency.exponentialRampToValueAtTime(40, seal + 0.12);
     kg.gain.setValueAtTime(0, seal);
-    kg.gain.linearRampToValueAtTime(0.35, seal + 0.006);
+    kg.gain.linearRampToValueAtTime(0.2, seal + 0.006);
     kg.gain.exponentialRampToValueAtTime(0.0005, seal + 0.18);
     knock.connect(kg).connect(this.dry);
     knock.start(seal);
@@ -194,7 +194,7 @@ export class SoundEngine {
     const hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 3500 });
     const hg = new GainNode(ctx, { gain: 0 });
     hg.gain.setValueAtTime(0, seal);
-    hg.gain.linearRampToValueAtTime(0.03, seal + 0.02);
+    hg.gain.linearRampToValueAtTime(0.012, seal + 0.02);
     hg.gain.setTargetAtTime(0, seal + 0.05, 0.4);
     hiss.connect(hp).connect(hg).connect(this.dry);
     hiss.start(seal, Math.random() * 1.5);
@@ -205,7 +205,7 @@ export class SoundEngine {
   private pushOut(at: number): void {
     const rumble = this.rumbleAt(at, at + 2);
     rumble.setValueAtTime(0, at);
-    rumble.setTargetAtTime(0.16, at, 0.05);
+    rumble.setTargetAtTime(0.09, at, 0.05);
     rumble.setTargetAtTime(0, at + 0.25, 0.25);
   }
 
@@ -257,17 +257,17 @@ function noiseBuffer(ctx: BaseAudioContext): AudioBuffer {
   return buf;
 }
 
-/** A dark room of about 2.5 s: decaying stereo noise, slightly smoothed. */
+/** A small, dull room, like a carriage (0.6 s): decaying stereo noise, slightly smoothed. */
 function roomImpulse(ctx: BaseAudioContext): AudioBuffer {
   const sr = ctx.sampleRate;
-  const buf = ctx.createBuffer(2, Math.round(sr * 2.5), sr);
+  const buf = ctx.createBuffer(2, Math.round(sr * 0.7), sr);
   for (let c = 0; c < 2; c++) {
     const d = buf.getChannelData(c);
     let y = 0;
     for (let i = 0; i < d.length; i++) {
       const t = i / sr;
       y += 0.35 * (Math.random() * 2 - 1 - y);
-      d[i] = y * Math.exp((-6.9 * t) / 2.5) * (t < 0.01 ? t / 0.01 : 1);
+      d[i] = y * Math.exp((-6.9 * t) / 0.6) * (t < 0.004 ? t / 0.004 : 1);
     }
   }
   return buf;

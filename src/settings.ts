@@ -5,10 +5,10 @@ import type { CameraFacing } from "./camera";
  * phone in focus gets a soundscape of its own, in headphones; the picture stays as it is).
  */
 export type ModeId = "remove" | "grow" | "hijack";
-/** Hijack mode: the kinds of sound a person can get (src/audio/voices.ts). */
-export type CharacterId = "drone" | "pulse" | "wash" | "plucks" | "beat";
-/** Hijack mode: "auto" gives each person their own character; otherwise everyone gets that one. */
-export type HijackSound = "auto" | CharacterId;
+/** Hijack mode: the conversations a person can be in (src/audio/scenes.ts). */
+export type SceneId = "comfort" | "catchup" | "argument" | "voicenote" | "secret";
+/** Hijack mode: "auto" gives each person their own conversation; otherwise everyone has that one. */
+export type HijackScene = "auto" | SceneId;
 /**
  * Grow mode: what is enlarged. "hand": the mask (as "mask") plus the hand on the phone, from the
  * detector's person mask (`growReach`); "mask": the detector's mask, with the dents fingers make
@@ -90,8 +90,8 @@ export interface Settings {
      * size; mask: the cut-out itself). Damps wobble.
      */
     growSmoothing: number;
-    /** Hijack mode: which sound a person gets (see HijackSound). */
-    hijackSound: HijackSound;
+    /** Hijack mode: which conversation a person is in (see HijackScene). */
+    hijackScene: HijackScene;
     /** Hijack mode: loudness, 0..1 (the output is limited whatever this is). */
     hijackVolume: number;
     /**
@@ -104,7 +104,7 @@ export interface Settings {
     hijackWatchMs: number;
     /** Hijack mode: how long the sound carries on when the phone in focus is lost (ms), before it fades. */
     hijackHoldMs: number;
-    /** Hijack mode: seconds of holding a phone until its sound has fully built up. */
+    /** Hijack mode: seconds of holding a phone until the conversation is at its most intimate. */
     hijackBuildSeconds: number;
     /** Hijack mode: draw the focus zone and a ring around the phone being listened to. */
     hijackOverlay: boolean;
@@ -137,7 +137,7 @@ export const DEFAULTS: Settings = {
     growMax: 2,
     growSeconds: 5,
     growSmoothing: 0.5,
-    hijackSound: "auto",
+    hijackScene: "auto",
     hijackVolume: 0.5,
     hijackZone: 0.6,
     hijackWatchMs: 500,
@@ -159,8 +159,8 @@ const OLD_DEFAULTS: { [K in keyof Settings]?: Settings[K][] } = {
 };
 
 export const MODE_ORDER: ModeId[] = ["remove", "grow", "hijack"];
-export const CHARACTERS: CharacterId[] = ["drone", "pulse", "wash", "plucks", "beat"];
-export const HIJACK_SOUNDS: HijackSound[] = ["auto", ...CHARACTERS];
+export const SCENE_IDS: SceneId[] = ["comfort", "catchup", "argument", "voicenote", "secret"];
+export const HIJACK_SCENES: HijackScene[] = ["auto", ...SCENE_IDS];
 export const GROW_SHAPES: GrowShape[] = ["hand", "mask", "hull", "rectangle"];
 
 export const FILL_ORDER: FillId[] = ["migan", "telea", "stylised"];

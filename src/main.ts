@@ -3,14 +3,14 @@ import { openCamera, openStill, type CameraFacing, type FrameSource } from './ca
 import { YoloSegDetector } from './detect/yoloSeg';
 import { report, reporting, startReporting, wasmMemoryMB } from './devReport';
 import { LiveSound } from './audio/engine';
-import { CHARACTER_LABELS } from './audio/voices';
+import { SCENES } from './audio/scenes';
 import { GrowEffect } from './effects/grow';
 import { HijackEffect } from './effects/hijack';
 import { RemoveEffect } from './effects/remove';
 import { FillSet } from './fill';
 import { Pipeline } from './pipeline';
 import { ScreenRecorder } from './recorder';
-import { CHARACTERS, FILL_ORDER, MODE_ORDER, SettingsStore, STYLE_ORDER, type ModeId } from './settings';
+import { FILL_ORDER, MODE_ORDER, SCENE_IDS, SettingsStore, STYLE_ORDER, type ModeId } from './settings';
 import { downloadBlob, downloadPng, mirrored, sideBySide, timestamp, toPngBlob } from './snapshot';
 import type { ModeControl } from './stream/modeLink';
 import { openRemote, type RemoteSource } from './stream/remoteSource';
@@ -322,15 +322,15 @@ async function main(): Promise<void> {
   const saveRecordingButton = panel.addAction('Save last recording', () => recorder.last && downloadBlob(recorder.last, recorder.last.name));
   saveRecordingButton.classList.add('gone');
   panel.addAction('Fullscreen', toggleFullscreen);
-  // Hijack mode: hear a character for 5 s without a phone (the one chosen, or each in turn).
+  // Hijack mode: hear a conversation for 10 s without a phone (the one chosen, or each in turn).
   let testIndex = 0;
   panel.addAction('Test sound', () => {
     sound.ensure();
-    const character = settings.hijackSound === 'auto' ? CHARACTERS[testIndex++ % CHARACTERS.length] : settings.hijackSound;
+    const scene = settings.hijackScene === 'auto' ? SCENE_IDS[testIndex++ % SCENE_IDS.length] : settings.hijackScene;
     if (!sound.engine) return note('no sound: this browser has no Web Audio');
     sound.setVolume(settings.hijackVolume);
-    sound.engine.preview(character, Math.floor(Math.random() * 2 ** 31));
-    note(`test sound: ${CHARACTER_LABELS[character]}`);
+    sound.engine.preview(scene, Math.floor(Math.random() * 2 ** 31));
+    note(`test sound: ${SCENES[scene].label}`);
   });
   panel.addAction('Close', () => panel.toggle());
 

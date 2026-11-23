@@ -4,9 +4,9 @@ A live camera view that changes the phones it sees. It has three modes:
 
 - **Remove**: phones are erased from people's hands, leaving the empty pose.
 - **Grow**: the phone inflates, from its real size to twice as big.
-- **Hijack**: the picture stays as it is; aim the camera at someone's phone and hear "their"
-  soundscape in headphones. Nothing is intercepted: the sound is made up from what the camera
-  sees. Mac only.
+- **Hijack**: the picture stays as it is; aim the camera at someone's phone and overhear "their"
+  conversation in headphones. Nothing is intercepted: it is a synthesised murmur without words.
+  Mac only.
 
 It runs in the browser, on the Mac alone or with an iPad as camera and screen while the Mac does
 the work. Pictures never leave the local network, and nothing is saved unless you take a snapshot
@@ -16,7 +16,7 @@ or record.
 camera → YOLO11-seg finds phones → tracker watches each one for about 1 s, then decides
        → remove: fill the hole (MI-GAN, Telea or stylised)
        → grow:   cut out the phone and the hand on it, draw it bigger
-       → hijack: the phone nearest the centre → synthesised sound
+       → hijack: the phone nearest the centre → synthesised murmur
 ```
 
 ## Setup (once)

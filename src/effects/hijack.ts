@@ -1,5 +1,5 @@
-// Hijack mode: aim the camera at someone's phone and hear "their" soundscape in headphones.
-// Nothing is intercepted; the sound is made up from what the camera sees of the phone.
+// Hijack mode: aim the camera at someone's phone and hear "their" conversation in headphones.
+// Nothing is intercepted: it is a murmur without words, made up on the spot.
 //
 // The picture is left as it is. On every processed frame this effect:
 //
@@ -15,14 +15,14 @@
 //      centred (SWITCH_MARGIN), for SWITCH_MS, and not within MIN_FOCUS_MS of the last switch.
 // 3. Tells the sound engine. Outside the zone, or with no phone: silence.
 //
-// Each person (tracker id) keeps the character and variations they were first given, and has a
-// clock of their own: their sound has been playing since before the camera saw them (a random
-// 0–2 min, fixed per person), so it is joined mid-phrase, and when you come back to them it has
-// moved on. The tracker forgets someone who is out of sight for more than 1 s, so turning away
-// and back gives that person a new sound.
+// Each person (tracker id) keeps the conversation, voices and language they were first given, and
+// has a clock of their own: they have been talking since before the camera saw them (a random
+// 0–2 min, fixed per person), so one comes in mid-sentence, and when one comes back it has moved
+// on. The tracker forgets someone who is out of sight for more than 1 s, so turning away and back
+// gives that person another conversation.
 import type { LiveSound } from '../audio/engine';
-import { clamp01, type VoiceParams } from '../audio/voices';
-import { CHARACTERS, type CharacterId, type Settings } from '../settings';
+import { clamp01, type VoiceParams } from '../audio/conversation';
+import { SCENE_IDS, type SceneId, type Settings } from '../settings';
 import type { Effect, EffectFrame, PickedPhone } from './types';
 
 /** A phone inside the zone is locked on after this long (ms), so a sweep across a room does not trigger every phone. */
@@ -39,9 +39,9 @@ const MIN_FOCUS_MS = 1500;
 const RING_FADE_MS = 400;
 
 interface Person {
-  character: CharacterId;
+  scene: SceneId;
   seed: number;
-  /** performance.now() at which their sound "started" (before the camera saw them). */
+  /** performance.now() at which their conversation "started" (before the camera saw them). */
   zero: number;
 }
 
@@ -58,8 +58,8 @@ export class HijackEffect implements Effect {
   private challenger: { id: number; since: number } | null = null;
   private lastSwitch = -Infinity;
   private people = new Map<number, Person>();
-  private deck: CharacterId[] = [];
-  private lastCharacter: CharacterId | null = null;
+  private deck: SceneId[] = [];
+  private lastScene: SceneId | null = null;
   private salt = Math.floor(Math.random() * 2 ** 31);
   /** Per phone: last centre and how much it has been moving (0..1, smoothed). */
   private motion = new Map<number, { x: number; y: number; t: number; activity: number }>();
@@ -90,7 +90,7 @@ export class HijackEffect implements Effect {
     const p = f.params;
     const pct = (v: number) => `${Math.round(v * 100)}`;
     const who = this.people.get(f.id);
-    return `hijack · #${f.id} ${this.effectiveCharacter(who)} · clear ${pct(p.clarity)} · near ${pct(p.closeness)} · build ${pct(p.build)} · moving ${pct(p.activity)} · ${out}`;
+    return `hijack · #${f.id} ${this.effectiveScene(who)} · clear ${pct(p.clarity)} · near ${pct(p.closeness)} · intimate ${pct(p.build)} · moving ${pct(p.activity)} · ${out}`;
   }
 
   reset(): void {
@@ -141,11 +141,11 @@ export class HijackEffect implements Effect {
       this.challenger = null;
       this.lastSwitch = now;
       const person = this.personFor(next.phone, s, now);
-      const character = this.effectiveCharacter(person);
+      const scene = this.effectiveScene(person);
       const params = this.paramsFor(next, s);
-      const key = `${next.phone.id}:${character}`;
+      const key = `${next.phone.id}:${scene}`;
       this.focus = { id: next.phone.id, since: now, lastSeen: now, key, params };
-      e?.focus(key, character, person.seed, params, (now - person.zero) / 1000);
+      e?.focus(key, scene, person.seed, params, (now - person.zero) / 1000);
     } else if (!keep) {
       if (this.focus) e?.release();
       this.focus = null;
@@ -153,12 +153,12 @@ export class HijackEffect implements Effect {
       // In focus: new numbers if it was seen this frame; the last ones again while it is lost.
       if (cur) this.focus.params = this.paramsFor(cur, s);
       const person = this.people.get(this.focus.id) ?? this.personFor(cur?.phone ?? null, s, now, this.focus.id);
-      const character = this.effectiveCharacter(person);
-      const key = `${this.focus.id}:${character}`;
-      // The sound setting was changed in the panel: hear the new character at once.
+      const scene = this.effectiveScene(person);
+      const key = `${this.focus.id}:${scene}`;
+      // The setting was changed in the panel: hear the new conversation at once.
       if (key !== this.focus.key || (e && e.focusKey !== key)) {
         this.focus.key = key;
-        e?.focus(key, character, person.seed, this.focus.params, (now - person.zero) / 1000);
+        e?.focus(key, scene, person.seed, this.focus.params, (now - person.zero) / 1000);
       } else e?.update(this.focus.params);
     }
 
@@ -248,15 +248,15 @@ export class HijackEffect implements Effect {
     m.t = now;
   }
 
-  /** The person holding this phone: their character, variations and clock, given the first time. */
+  /** The person holding this phone: their conversation, voices and clock, given the first time. */
   private personFor(phone: PickedPhone | null, s: Settings, now: number, id = phone?.id ?? 0): Person {
     let p = this.people.get(id);
     if (!p) {
       const seed = (Math.imul(id, 2654435761) ^ this.salt) >>> 0;
-      // Their sound was already playing: since the phone came into view (watch time + time
+      // They were already talking: since the phone came into view (watch time + time
       // since the tracker decided), plus 0–2 min before that.
       const before = (seed % 120_000) + (phone ? phone.erasedMs : 0) + s.hijackWatchMs;
-      p = { character: this.drawCharacter(), seed, zero: now - before };
+      p = { scene: this.drawScene(), seed, zero: now - before };
       this.people.set(id, p);
       // Ids only grow; keep the map from growing for ever in a long run.
       if (this.people.size > 200) this.people.delete(this.people.keys().next().value!);
@@ -264,24 +264,24 @@ export class HijackEffect implements Effect {
     return p;
   }
 
-  private effectiveCharacter(p: Person | undefined): CharacterId {
+  private effectiveScene(p: Person | undefined): SceneId {
     const s = this.settings;
-    if (s && s.hijackSound !== 'auto') return s.hijackSound;
-    return p?.character ?? 'drone';
+    if (s && s.hijackScene !== 'auto') return s.hijackScene;
+    return p?.scene ?? 'catchup';
   }
 
-  /** Characters are dealt from a shuffled deck, so each comes up in turn and two people in a row never get the same one. */
-  private drawCharacter(): CharacterId {
+  /** Conversations are dealt from a shuffled deck, so each comes up in turn and two people in a row never get the same one. */
+  private drawScene(): SceneId {
     if (!this.deck.length) {
-      this.deck = [...CHARACTERS];
+      this.deck = [...SCENE_IDS];
       for (let i = this.deck.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [this.deck[i], this.deck[j]] = [this.deck[j], this.deck[i]];
       }
-      if (this.deck[this.deck.length - 1] === this.lastCharacter) this.deck.reverse();
+      if (this.deck[this.deck.length - 1] === this.lastScene) this.deck.reverse();
     }
-    const c = this.deck.pop()!;
-    this.lastCharacter = c;
-    return c;
+    const scene = this.deck.pop()!;
+    this.lastScene = scene;
+    return scene;
   }
 }

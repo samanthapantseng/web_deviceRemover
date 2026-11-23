@@ -1,5 +1,5 @@
-import { CHARACTER_LABELS } from '../audio/voices';
-import { FILL_ORDER, GROW_SHAPES, HIJACK_SOUNDS, MODE_ORDER, STYLE_ORDER, type Settings, type SettingsStore } from '../settings';
+import { SCENES } from '../audio/scenes';
+import { FILL_ORDER, GROW_SHAPES, HIJACK_SCENES, MODE_ORDER, STYLE_ORDER, type Settings, type SettingsStore } from '../settings';
 
 export interface PanelStats {
   displayFps: number;
@@ -22,7 +22,7 @@ export interface PanelStats {
 const MODE_LABELS = {
   remove: 'remove (erase the phone)',
   grow: 'grow (inflate the phone)',
-  hijack: 'hijack (hear the phone in focus)',
+  hijack: 'hijack (overhear the phone in focus)',
 } as const;
 const SHAPE_LABELS = {
   hand: 'precise mask + hand (person mask)',
@@ -67,12 +67,12 @@ export class DebugPanel {
     this.slider('growMax', 'Grow: final size', 1, 8, 0.25, (v) => `${v}×`);
     this.slider('growSeconds', 'Grow: time to final size', 2, 120, 1, (v) => `${v} s`);
     this.slider('growSmoothing', 'Grow: shape smoothing', 0, 0.8, 0.05, (v) => v.toFixed(2));
-    this.select('hijackSound', 'Hijack: sound', HIJACK_SOUNDS, (v) => (v === 'auto' ? 'each person their own' : `everyone: ${CHARACTER_LABELS[v]}`));
+    this.select('hijackScene', 'Hijack: conversation', HIJACK_SCENES, (v) => (v === 'auto' ? 'each person their own' : `everyone: ${SCENES[v].label}`));
     this.slider('hijackVolume', 'Hijack: volume', 0, 1, 0.05, (v) => `${Math.round(v * 100)} %`);
     this.slider('hijackZone', 'Hijack: focus zone (radius)', 0.1, 2, 0.05, (v) => `${Math.round(v * 50)} % of picture height`);
     this.slider('hijackWatchMs', 'Hijack: watch a new phone for', 0, 3000, 250, (v) => (v ? `${(v / 1000).toFixed(2)} s` : 'no wait'));
     this.slider('hijackHoldMs', 'Hijack: keep sound when phone lost', 0, 6000, 250, (v) => `${(v / 1000).toFixed(2)} s`);
-    this.slider('hijackBuildSeconds', 'Hijack: holding time to full build-up', 5, 120, 5, (v) => `${v} s`);
+    this.slider('hijackBuildSeconds', 'Hijack: holding time to most intimate', 5, 120, 5, (v) => `${v} s`);
     this.checkbox('hijackOverlay', 'Hijack: show focus zone and ring');
     this.select('fill', 'Fill mode', FILL_ORDER, (v) => FILL_LABELS[v]);
     this.select('style', 'Stylised variant', STYLE_ORDER, (v) => v);

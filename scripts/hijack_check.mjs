@@ -5,12 +5,14 @@
 //   npm run check:hijack -- captures/clip_moving.y4m
 //
 // 1. Live, with the clip (which has a phone in it) as the webcam: no sound before a click; after
-//    a click, how long until the phone is heard; each character's level and peak; silence again
-//    after switching to remove mode; a screen recording in hijack mode has a sound track.
+//    a click, how long until the phone is heard; each conversation's level, how much of the time
+//    someone is speaking, and what writing it costs; silence again after switching to remove
+//    mode; a screen recording in hijack mode has a sound track.
 // 2. Live, with a picture without a phone: silence the whole time.
-// 3. Each character rendered offline into captures/hijack_<character>.wav (15 s: breaking in at
-//    the edge of the zone, the leak, moving into the centre, building up inside, moving, still,
-//    pushed out), with measurements of each stage. These files are for listening.
+// 3. Each conversation rendered offline into captures/hijack_<scene>.wav (28 s: breaking in at the
+//    edge of the zone on the left, overheard there, moving into the centre from 12 s, inside from
+//    14 s, pushed out at 24 s), with measurements of each stage. These files are for listening.
+//    On macOS, its sound classifier says what it hears in them (scripts/ears.swift).
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,8 +55,6 @@ async function open(query) {
   return page;
 }
 
-/** dB of what is left when the low band is taken out of the total. */
-const above = (total, low) => 10 * Math.log10(Math.max(1e-30, 10 ** (total / 10) - 10 ** (low / 10)));
 const fmt = (db) => (Number.isFinite(db) ? +db.toFixed(1) : 'silent');
 
 try {
@@ -73,7 +73,7 @@ try {
     const db = () => dr.sound.engine.levels();
     dr.store.set('mirror', false);
     dr.store.set('hijackZone', 2); // the whole picture: the clip's phone is not always in the centre
-    dr.store.set('hijackSound', 'auto');
+    dr.store.set('hijackScene', 'auto');
     // A fresh start, as if the phone had just come into view.
     dr.pipeline.tracker.reset();
     dr.effect.reset();
@@ -86,23 +86,38 @@ try {
       if (heardAt === null && db().rms > -50) heardAt = performance.now() - t0;
     }
     const rows = [];
-    for (const c of ['drone', 'pulse', 'wash', 'plucks', 'beat']) {
-      dr.store.set('hijackSound', c);
-      await sleep(2500); // tuning in to the new character
+    for (const c of ['comfort', 'catchup', 'argument', 'voicenote', 'secret']) {
+      dr.store.set('hijackScene', c);
+      await sleep(2500); // breaking in
       let sum = 0;
+      let heard = 0;
       let n = 0;
       let peak = -Infinity;
+      let slowest = 0; // longest time between two display frames: does writing turns hold up the picture?
+      let last = performance.now();
+      let watching = true;
+      const watch = () => {
+        const now = performance.now();
+        slowest = Math.max(slowest, now - last);
+        last = now;
+        if (watching) requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
       const t = performance.now();
-      while (performance.now() - t < 3000) {
+      while (performance.now() - t < 9000) {
         const l = db();
-        if (Number.isFinite(l.rms)) sum += 10 ** (l.rms / 10);
+        if (l.rms > -45) {
+          heard++;
+          sum += 10 ** (l.rms / 10);
+        }
         n++;
         peak = Math.max(peak, l.peak);
         await sleep(40);
       }
-      rows.push({ character: c, 'rms dB': 10 * Math.log10(sum / n), 'peak dB': peak, mode: dr.effect.describe().replace(/^hijack · /, '') });
+      watching = false;
+      rows.push({ conversation: c, 'speaking %': Math.round((100 * heard) / n), 'rms dB (speaking)': 10 * Math.log10(sum / Math.max(1, heard)), 'peak dB': peak, 'slowest frame ms': Math.round(slowest), 'pipeline fps': Math.round(dr.pipeline.stats.pipelineFps), mode: dr.effect.describe().replace(/^hijack · /, '') });
     }
-    dr.store.set('hijackSound', 'auto');
+    dr.store.set('hijackScene', 'auto');
     // Leaving hijack mode: silence.
     dr.store.set('mode', 'remove');
     const tOff = performance.now();
@@ -147,29 +162,28 @@ try {
   // ---- 3. Offline renders, for listening ----
   const renders = await blank.evaluate(async () => {
     const { SoundEngine, CEILING } = await import('/src/audio/engine.ts');
-    const SECONDS = 15;
-    const SR = 44100;
+    const SECONDS = 28;
+    const SR = 48000;
     const lerp = (a, b, x) => a + (b - a) * Math.min(1, Math.max(0, x));
     const out = [];
-    for (const c of ['drone', 'pulse', 'wash', 'plucks', 'beat']) {
+    for (const c of ['comfort', 'catchup', 'argument', 'voicenote', 'secret']) {
       const ctx = new OfflineAudioContext(2, SECONDS * SR, SR);
       const e = new SoundEngine(ctx, 0.5);
-      // 0–3 s at the edge of the zone, on the left (0–0.8 s breaking in, then the leak);
-      // 3–5 s moving into the centre; 5–9 s inside, building up; 9–11 s moving; 11–12 s still;
-      // at 12 s pushed out.
       const params = (t) => ({
-        pan: lerp(-0.6, 0, (t - 3) / 2),
-        clarity: lerp(0.1, 1, (t - 3) / 2),
+        pan: -0.6,
+        clarity: lerp(0.05, 1, (t - 12) / 2),
         closeness: 0.6,
-        build: lerp(0, 1, (t - 5) / 4),
-        activity: t >= 9 && t < 11 ? 0.9 : 0,
+        build: 0.1,
+        activity: 0,
       });
-      e.focus('render', c, 12345, params(0), 37.3, 0); // joined 37.3 s into their sound
+      const t0 = performance.now();
+      e.focus('render', c, 12345, params(0), 37.3, 0); // joined 37.3 s into it
       for (let t = 0.05; t < SECONDS; t += 0.05) {
-        if (t < 12) e.update(params(t), t);
-        else if (t - 0.05 < 12) e.release(12);
+        if (t < 24) e.update(params(t), t);
+        else if (t - 0.05 < 24) e.release(24);
         e.scheduleUntil(t + 0.3);
       }
+      const writeMs = performance.now() - t0;
       const buf = await ctx.startRendering();
       const L = buf.getChannelData(0);
       const R = buf.getChannelData(1);
@@ -193,22 +207,34 @@ try {
         }
         return 10 * Math.log10((l || 1e-30) / (r || 1e-30));
       };
-      // Energy below about 200 Hz, dB RMS (two one-pole low-passes).
-      const a = Math.exp((-2 * Math.PI * 200) / SR);
-      const low = new Float32Array(L.length);
-      let y1 = 0;
-      let y2 = 0;
-      for (let i = 0; i < L.length; i++) {
-        y1 = (1 - a) * ((L[i] + R[i]) / 2) + a * y1;
-        y2 = (1 - a) * y1 + a * y2;
-        low[i] = y2;
-      }
-      const lowRms = (from, to) => {
+      // Someone speaking: 50 ms windows within 25 dB of the loudest in that stretch.
+      const speaking = (from, to) => {
+        const w = Math.round(0.05 * SR);
+        const e2 = [];
+        for (let i = Math.floor(from * SR); i + w < Math.floor(to * SR); i += w) {
+          let s = 0;
+          for (let k = 0; k < w; k++) s += L[i + k] * L[i + k] + R[i + k] * R[i + k];
+          e2.push(s);
+        }
+        const top = Math.max(...e2);
+        return (100 * e2.filter((v) => v > top * 10 ** -2.5).length) / e2.length;
+      };
+      // Energy above about 2 kHz relative to all, dB (one-pole, twice): how open it sounds.
+      const a = Math.exp((-2 * Math.PI * 2000) / SR);
+      const top = (from, to) => {
+        let y1 = 0;
+        let y2 = 0;
         let s = 0;
-        const i0 = Math.floor(from * SR);
-        const i1 = Math.floor(to * SR);
-        for (let i = i0; i < i1; i++) s += low[i] * low[i];
-        return 10 * Math.log10(s / (i1 - i0) || 1e-30);
+        let all = 0;
+        for (let i = Math.floor(from * SR); i < Math.floor(to * SR); i++) {
+          const x = (L[i] + R[i]) / 2;
+          y1 = (1 - a) * x + a * y1;
+          y2 = (1 - a) * (x - y1) + a * y2;
+          const h = x - y1 - y2;
+          s += h * h;
+          all += x * x;
+        }
+        return 10 * Math.log10((s || 1e-30) / (all || 1e-30));
       };
       // 16-bit stereo WAV.
       const n = L.length;
@@ -234,18 +260,12 @@ try {
       const bytes = new Uint8Array(wav.buffer);
       for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
       out.push({
-        character: c,
-        rumbleIn: lowRms(0.3, 0.78),
-        rumbleSealed: lowRms(0.9, 1.6),
-        edge: { ...stat(1.2, 2.9), balance: balance(1.2, 2.9), low: lowRms(1.2, 2.9) },
-        inside: { ...stat(5.5, 9), balance: balance(5.5, 9), low: lowRms(5.5, 9) },
-        // Above ~200 Hz, so the rumble coming back does not count.
-        beforeDoor: stat(11.5, 12).rms,
-        beforeDoorLow: lowRms(11.5, 12),
-        behindDoor: stat(12.1, 12.3).rms,
-        behindDoorLow: lowRms(12.1, 12.3),
+        scene: c,
+        edge: { ...stat(1.2, 12), balance: balance(1.2, 12), speaking: speaking(1.2, 12), top: top(1.2, 12) },
+        inside: { ...stat(14.5, 24), balance: balance(14.5, 24), speaking: speaking(14.5, 24), top: top(14.5, 24) },
         all: stat(0, SECONDS),
-        end: stat(14.5, 15),
+        end: stat(27.5, 28),
+        writeMs,
         ceiling: 20 * Math.log10(CEILING),
         wav: btoa(bin),
       });
@@ -253,35 +273,56 @@ try {
     return out;
   });
   await blank.close();
-  for (const r of renders) writeFileSync(join(outDir, `hijack_${r.character}.wav`), Buffer.from(r.wav, 'base64'));
+  for (const r of renders) writeFileSync(join(outDir, `hijack_${r.scene}.wav`), Buffer.from(r.wav, 'base64'));
 
   // ---- Report ----
   console.log(`before any click: sound running ${before.running}, hint shown ${before.hint} (headless Chrome may allow sound without a click; the real browser does not)`);
   console.log(`after the click, from a fresh start: in focus after ${fmt(live.focusAt)} ms, heard (above -50 dB) after ${fmt(live.heardAt)} ms`);
-  console.table(live.rows.map((r) => ({ ...r, 'rms dB': fmt(r['rms dB']), 'peak dB': fmt(r['peak dB']) })));
+  console.table(live.rows.map((r) => ({ ...r, 'rms dB (speaking)': fmt(r['rms dB (speaking)']), 'peak dB': fmt(r['peak dB']) })));
   console.log(`switched to remove mode: silent after ${live.silentAt === null ? 'NOT within 8 s' : `${Math.round(live.silentAt)} ms`}; back in hijack: running ${live.after.running}, hint shown ${live.after.hint}`);
   console.log(`screen recording in hijack mode: ${recording}`);
   console.log(`picture without a phone, 6 s: loudest peak ${fmt(empty.loudest)} dB · ${empty.mode}`);
-  console.log('offline renders (15 s each), dB. Bass: energy below ~200 Hz; L−R: positive = heard on the left (the phone is on the left at the edge):');
+  console.log('offline renders (28 s each). L−R: positive = heard on the left, where the phone is. Top: share above 2 kHz, dB:');
   console.table(
     renders.map((r) => ({
-      character: r.character,
-      'rumble breaking in': fmt(r.rumbleIn),
-      'bass sealed (leak)': fmt(r.rumbleSealed),
+      conversation: r.scene,
       'edge rms': fmt(r.edge.rms),
-      'edge bass': fmt(r.edge.low),
+      'edge speaking %': Math.round(r.edge.speaking),
       'edge L−R': fmt(r.edge.balance),
+      'edge top': fmt(r.edge.top),
       'inside rms': fmt(r.inside.rms),
-      'inside bass': fmt(r.inside.low),
+      'inside speaking %': Math.round(r.inside.speaking),
       'inside L−R': fmt(r.inside.balance),
-      'door drop (>200 Hz)': fmt(above(r.behindDoor, r.behindDoorLow) - above(r.beforeDoor, r.beforeDoorLow)),
+      'inside top': fmt(r.inside.top),
       'peak (all)': fmt(r.all.peak),
       'last 0.5 s peak': fmt(r.end.peak),
+      'written in ms': Math.round(r.writeMs),
     })),
   );
   console.log(`ceiling ${fmt(renders[0].ceiling)} dB`);
+  // What macOS hears: in the overheard part, and inside.
+  if (process.platform === 'darwin') {
+    const dir = mkdtempSync(join(tmpdir(), 'device-remover-ears-'));
+    const parts = [];
+    for (const r of renders) {
+      const file = join(outDir, `hijack_${r.scene}.wav`);
+      for (const [part, from, seconds] of [['edge', 1.2, 10.8], ['inside', 14.5, 9.5]]) {
+        const cut = join(dir, `${r.scene}_${part}.wav`);
+        execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', String(from), '-t', String(seconds), '-i', file, '-af', 'volume=8dB', cut]);
+        parts.push(cut);
+      }
+    }
+    try {
+      const ears = join(dir, 'ears');
+      execFileSync('swiftc', ['-O', join(dirname(fileURLToPath(import.meta.url)), 'ears.swift'), '-o', ears]);
+      console.log("what macOS's sound classifier hears (real speech: speech 0.99):");
+      console.log(execFileSync(ears, parts).toString().trim());
+    } catch (err) {
+      console.log(`sound classifier not available: ${String(err.message).split('\n')[0]}`);
+    }
+  }
   console.log(problems.length ? `problems:\n  ${problems.join('\n  ')}` : 'no console errors');
-  console.log(`wrote ${renders.map((r) => `captures/hijack_${r.character}.wav`).join(', ')}`);
+  console.log(`wrote ${renders.map((r) => `captures/hijack_${r.scene}.wav`).join(', ')}`);
   process.exitCode = problems.length ? 1 : 0;
 } finally {
   await browser.close();
