@@ -18,6 +18,7 @@ import '../style.css';
 import './stream.css';
 import { report, reporting, startReporting } from '../devReport';
 import { downloadBlob, timestamp } from '../snapshot';
+import { noZoom } from '../ui/noZoom';
 import { isTouchDevice } from '../ui/panel';
 import { codecFromUrl, describeLink, LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
 import { Stamper, StampReader } from './latency';
@@ -29,6 +30,7 @@ import { Signal, type SignalMessage } from './signal';
 
 startReporting();
 keepScreenOn();
+noZoom();
 
 // ---------------------------------------------------------------- settings (this page only)
 

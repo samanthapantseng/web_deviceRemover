@@ -6,6 +6,8 @@
 
 * {
   box-sizing: border-box;
+  /* Touch screens: no double-tap zoom. On every element, since touch-action is not inherited. */
+  touch-action: manipulation;
 }
 
 html,
@@ -14,9 +16,7 @@ body {
   height: 100%;
   background: #000;
   overflow: hidden;
-  /* Touch screens: no double-tap zoom (double-tap opens the panel), no text selection or
-     long-press menus on the picture. */
-  touch-action: manipulation;
+  /* Touch screens: no text selection or long-press menus on the picture. */
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -26,6 +26,14 @@ input,
 textarea {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* The picture (Mac page, iPad stream page): no zoom or scroll by touch at all; a double-tap
+   opens the panel. See also ui/noZoom.ts. */
+#view,
+#out,
+#freeze {
+  touch-action: none;
 }
 
 #view {

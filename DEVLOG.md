@@ -1087,3 +1087,25 @@ Typecheck passes.
 
 Not verified: the real iPad and Safari; a phone held in front of the body, which the iPad's back
 camera sees when it is pointed at someone (no such picture among the test images).
+
+## 2026-11-23 · no zooming on the iPad
+
+Reported by the user: double-tapping the picture on the iPad to open the panel also zoomed the
+page in.
+
+Cause (from the code, not reproduced: no iPad simulator on this Mac): double-tap zoom was already
+meant to be off, with `touch-action: manipulation`, but only on `html` and `body`. The property is
+not inherited, and the tap lands on the video on top of them.
+
+- `style.css`: `touch-action: manipulation` on every element, and `none` on the picture itself
+  (`#view`, `#out`, `#freeze`).
+- `src/ui/noZoom.ts`, used by the stream page and the normal page: also cancels the gestures
+  (touchend outside the panel and buttons, Safari's pinch events, dblclick), in case Safari does
+  not follow the CSS. So a pinch does not zoom either, and nobody can leave the page zoomed in.
+
+Checked in headless Chrome as a touch device, both pages, together with the Remove / Grow
+buttons' code: double-tap opens the panel and the page stays at scale 1; Mirror, two quick taps on
+it, and Close work by touch; a two-finger pinch stays at scale 1 (control with `touch-action`
+switched off: 5). Typecheck passes.
+
+Not verified: Safari on the real iPad.

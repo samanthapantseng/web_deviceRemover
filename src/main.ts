@@ -15,8 +15,10 @@ import { downloadBlob, downloadPng, mirrored, sideBySide, timestamp, toPngBlob }
 import type { ModeControl } from './stream/modeLink';
 import { openRemote, type RemoteSource } from './stream/remoteSource';
 import { DebugPanel, isTouchDevice } from './ui/panel';
+import { noZoom } from './ui/noZoom';
 
 startReporting();
+noZoom();
 
 const store = new SettingsStore();
 const settings = store.value;
