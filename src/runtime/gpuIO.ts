@@ -1,5 +1,5 @@
 // EXPERIMENTAL, only with `?gpuio=1`: model inputs and outputs that stay on the GPU, moved with
-// buffers we create once and reuse. Not proven to stop Safari's memory growth (DEVLOG 2026-11-17).
+// buffers we create once and reuse. Not proven to stop Safari's memory growth (tried 2026-11-17).
 //
 // Why: for every run, onnxruntime-web's WebGPU provider uploads each CPU input and downloads each
 // output through a new staging buffer that it releases without destroying, leaving the memory to

@@ -12,3 +12,6 @@ public/ort/
 
 # Test stills saved from the still-image test page (may contain faces)
 captures/
+
+# Private notes: the DEVLOG and the long README (only on this Mac, not on GitHub)
+private/

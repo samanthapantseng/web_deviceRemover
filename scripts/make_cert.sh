@@ -3,7 +3,7 @@
 # (or on localhost, which the iPad is not).
 #
 # First run: creates a small certificate authority (CA) for this Mac and shows its certificate
-# in Finder. Install that on the iPad once (README, "Testing on the iPad"). Every run: issues a
+# in Finder. Install that on the iPad once (README, "iPad: before the first time"). Every run: issues a
 # fresh server certificate, signed by that CA, for this Mac's network name and current
 # addresses, so moving to another network needs no reinstall on the iPad.
 #
@@ -44,7 +44,7 @@ EOF
   echo "Created a certificate authority for this Mac:"
   echo "  $CA_CERT"
   echo "Install it on the iPad once (AirDrop it, then Settings > General > About > Certificate Trust Settings)."
-  echo "See README, \"Testing on the iPad\"."
+  echo "See README, \"iPad: before the first time\"."
   [ -z "${CI:-}" ] && command -v open >/dev/null && open -R "$CA_CERT" || true
 fi
 

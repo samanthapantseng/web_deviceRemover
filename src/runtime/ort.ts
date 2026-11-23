@@ -133,7 +133,7 @@ export class Model {
 /**
  * WebGPU options. EXPERIMENTAL, off by default: `?cache=simple` makes onnxruntime reuse every GPU
  * buffer instead of creating some anew for each run. Tried against Safari's memory growth on the
- * iPad (see DEVLOG, 2026-11-17); not proven to help, so the default stays onnxruntime's own.
+ * iPad (2026-11-17); not proven to help, so the default stays onnxruntime's own.
  */
 function webgpuProvider(): ort.InferenceSession.WebGpuExecutionProviderOption {
   if (new URLSearchParams(location.search).get('cache') !== 'simple') return { name: 'webgpu' };

@@ -30,7 +30,7 @@ if [ -f "$CA" ] && ! security verify-cert -c "$SUPPORT/certs/server.pem" -p ssl 
 
   This Mac does not trust the Device Remover certificate yet, so Chrome will show a warning.
   For a quick test: click "Advanced", then "Proceed to localhost".
-  To fix it once (README, "Streaming mode"): open Keychain Access, drag in
+  To fix it once (README, "iPad: before the first time"): open Keychain Access, drag in
     $CA
   double-click "Device Remover local CA", open "Trust", set "When using this certificate" to
   "Always Trust", close the window and enter your password.

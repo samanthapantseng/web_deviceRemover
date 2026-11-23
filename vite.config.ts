@@ -180,7 +180,7 @@ function printIpadUrl(): Plugin {
         const port = server.config.server.port ?? 8443;
         setTimeout(() => {
           console.log(`\n  iPad:  https://${host}.local:${port}/    still test: https://${host}.local:${port}/still.html`);
-          console.log('  The iPad must be on the same Wi-Fi and trust the certificate (README, "Testing on the iPad").');
+          console.log('  The iPad must be on the same Wi-Fi and trust the certificate (README, "iPad: before the first time").');
           console.log(`  Streaming mode: iPad  https://${host}.local:${port}/stream.html  (or the Network address + /stream.html)`);
           console.log(`                  Mac   npm run stream:mac  (opens https://localhost:${port}/?source=stream)\n`);
         }, 50);
@@ -198,7 +198,7 @@ export default defineConfig(({ mode }) => {
     server: {
       ...(ipad ? ipadServer() : { headers: isolationHeaders }),
       // Test stills (faces) are only handed out by devCaptures above, and only to this Mac.
-      fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/captures/**'] },
+      fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/captures/**', '**/private/**'] },
     },
     preview: { headers: isolationHeaders },
     // onnxruntime-web ships pre-bundled ESM that locates its own .wasm; don't let Vite re-bundle it.
