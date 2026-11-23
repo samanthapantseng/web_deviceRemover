@@ -1029,3 +1029,61 @@ transitions first: they change all five characters at once without new sound des
 Not verified: how any of it sounds; the dropouts are not measured (the rumble under them hides
 them from a level measurement); live with a person and headphones.
 
+## 2026-11-20 · the iPad on an Ethernet cable
+
+(Written down on 23 Nov, from notes.) Streaming without Wi-Fi: an AX88179B USB-C adapter on the
+Mac and an Ethernet adapter on the iPad, joined by one Ethernet cable, with fixed addresses (Mac
+192.168.77.1, iPad 192.168.77.2). A ping takes about 1.5 ms. Set-up: README, "Streaming over an
+Ethernet cable".
+
+The first try failed: the page loaded but no picture came. The Mac's Chrome had no camera
+permission, and without one Chrome offers WebRTC only the address of the default route, which is
+Wi-Fi. Fixed by asking for the camera once (`allowAllAddresses()` in `remoteSource.ts`; the
+camera is put away at once) and by always putting 192.168.77.1 into the certificate
+(`make_cert.sh`).
+
+## 2026-11-23 · grow mode on the iPad (branch `grow-ipad`)
+
+Asked for by the user: the grower on the iPad as well. Streaming mode runs the same pipeline on
+the Mac, so grow already worked there, but only when switched on at the Mac, and it had never
+been tried: all real iPad sessions so far were MI-GAN or stylised.
+
+### Before changing anything
+
+Grow over the stream, two headless Chromes, moving clip: 30 cut-outs a second (detect 25.6 ms,
+effect 4.6 ms), 29 fps on the "iPad", round trip 85 ms median. The phone grows 1× → 2× as on the
+Mac. So nothing in the effect had to change; what was missing was the switch.
+
+### What was added
+
+- **Remove / Grow buttons** at the top of the iPad's panel, and `G` on a keyboard there.
+- `src/stream/modeLink.ts`: a data channel on the same connection as the video. The mode stays
+  the Mac's setting. The iPad asks; the Mac changes it (like `G`) and tells the iPad, on every
+  change and when a connection opens. So the buttons show what the Mac does, also when it is
+  changed there, and reloading either page or reconnecting keeps it.
+- Hijack can't be chosen on the iPad (its sound plays on the Mac); the panel says when the Mac
+  is in it. Grow's own settings (size, time, shape) stay on the Mac.
+- `npm run check:stream` now taps Grow and Remove in the iPad's panel, adds a grow row to its
+  table and writes `captures/stream_grow_sheet.jpg`.
+
+### What failed, and the fix
+
+- When the Mac page was closed, the buttons stayed usable for a while: a data channel only
+  notices many seconds later that the other side is gone, and a tap went nowhere. The panel now
+  also listens to the dev server, which knows at once.
+- After a few minutes of tests grow ran at 15 a second instead of 30, with the model at 56 ms
+  instead of 22. Not the switch: the first switch went straight to 30, and the slowdown began in
+  the middle of remove mode and hit MI-GAN as well. The Mac was on battery at 20 %, after
+  several minutes of full GPU load (also: 25 days since the last restart, 3.7 GB swap in use).
+  Which of these it was is not established.
+
+### Checked (headless, the Mac on battery)
+
+`check:stream` in full: all modes, tapping Grow and Remove, all six interruptions recovered, no
+console errors. Separately: `G` on the iPad; hijack switched on at the Mac and left from the
+iPad; iPad reloaded, Mac reloaded (still grow, 2.0× again after it), reconnect, Mac page closed
+(buttons greyed out); the iPad's screenshot in grow mode (before / after, 2×, mirrored).
+Typecheck passes.
+
+Not verified: the real iPad and Safari; a phone held in front of the body, which the iPad's back
+camera sees when it is pointed at someone (no such picture among the test images).

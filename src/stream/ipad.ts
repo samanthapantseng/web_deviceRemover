@@ -3,6 +3,8 @@
  * screen, the picture the Mac sends back. Nothing is processed here, and the iPad's own camera
  * picture is never shown: only finished frames from the Mac.
  *
+ * The panel's Remove / Grow switch sets the Mac's mode (modeLink.ts).
+ *
  * This page drives recovery. It starts a fresh connection whenever the Mac page appears, the
  * connection fails, or no frame has arrived for 3 s, and keeps trying for as long as it is open.
  *
@@ -19,6 +21,7 @@ import { downloadBlob, timestamp } from '../snapshot';
 import { isTouchDevice } from '../ui/panel';
 import { codecFromUrl, describeLink, LinkMeter, limitSender, lowLatency, newPeer, NO_LINK, preferCodec, waitForCandidates, type LinkStats } from './link';
 import { Stamper, StampReader } from './latency';
+import { IPAD_MODES, MODE_CHANNEL, ModeClient, type IpadMode } from './modeLink';
 import { ScreenRecorder } from '../recorder';
 import { keepScreenOn, toggleFullscreen } from './screen';
 import { SHOT_CHANNEL, ShotClient } from './shots';
@@ -255,6 +258,38 @@ saveRecordingButton.classList.add('gone');
 addAction('Fullscreen', toggleFullscreen);
 addAction('Reconnect', () => void connect('reconnect button'));
 addAction('Close', togglePanel);
+
+// Remove or grow the phones. The mode is the Mac's; the switch shows what the Mac says it is in.
+const modes = new ModeClient();
+{
+  const row = el('div', 'row');
+  const head = el('div', 'row-head');
+  const value = el('span', 'value');
+  head.append(el('span', undefined, 'Mode'), value);
+  const group = el('div', 'modes');
+  const labels = { remove: 'Remove', grow: 'Grow' };
+  const buttons = IPAD_MODES.map((mode) => {
+    const b = el('button', 'btn', labels[mode]);
+    b.onclick = () => askMode(mode);
+    group.append(b);
+    return { mode, b };
+  });
+  modes.onChange = () => {
+    for (const { mode, b } of buttons) {
+      b.disabled = modes.mode === null;
+      b.classList.toggle('chosen', modes.mode === mode);
+      b.setAttribute('aria-pressed', String(modes.mode === mode));
+    }
+    value.textContent = modes.mode === null ? 'no connection to the Mac' : modes.mode === 'hijack' ? 'hijack (set on the Mac)' : '';
+  };
+  modes.onChange();
+  row.append(head, group);
+  panel.insertBefore(row, actions);
+}
+
+function askMode(mode: IpadMode): void {
+  if (!modes.request(mode)) note('the mode is set on the Mac: no connection to it right now');
+}
 {
   const row = el('label', 'row');
   const head = el('div', 'row-head');
@@ -293,7 +328,7 @@ for (const [key, label] of [
   row.append(input, el('span', undefined, label));
   panel.append(row);
 }
-panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · S screenshot · V record · F fullscreen · R reconnect'));
+panel.append(el('div', 'keys', isTouchDevice ? 'Double-tap the picture to show or hide this panel.' : 'D panel · G remove / grow · S screenshot · V record · F fullscreen · R reconnect'));
 document.body.append(panel);
 
 let lastTap = 0;
@@ -310,6 +345,7 @@ window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || e.target instanceof HTMLSelectElement) return;
   const k = e.key.toLowerCase();
   if (k === 'd') togglePanel();
+  else if (k === 'g') askMode(modes.mode === 'grow' ? 'remove' : 'grow');
   else if (k === 's') void screenshot();
   else if (k === 'v') toggleRecording();
   else if (k === 'f') toggleFullscreen();
@@ -379,6 +415,7 @@ async function connect(reason: string): Promise<void> {
   transceiver = t;
   // The screenshot's way back from the Mac, on the same connection.
   shots.attach(p.createDataChannel(SHOT_CHANNEL));
+  modes.attach(p.createDataChannel(MODE_CHANNEL));
   notes = `${preferCodec(t, codec)} · ${lowLatency(t.receiver)}`;
   p.ontrack = (e) => {
     if (pc !== p) return;
@@ -683,6 +720,7 @@ async function main(): Promise<void> {
       if (present) void connect('the Mac page arrived');
       else {
         holdPicture();
+        modes.detach();
         report('status', { text: 'the Mac page left' });
       }
     },
@@ -708,6 +746,7 @@ async function main(): Promise<void> {
       unreadable: () => reader?.unreadable ?? 0,
       resetLatency: () => reader?.reset(),
       reconnect: () => connect('test'),
+      mode: () => modes.mode,
       camera: () => {
         const ts = (camTrack as (MediaStreamTrack & { stats?: { deliveredFrames: number; totalFrames: number } }) | null)?.stats;
         return {

@@ -12,6 +12,7 @@ import { Pipeline } from './pipeline';
 import { ScreenRecorder } from './recorder';
 import { CHARACTERS, FILL_ORDER, MODE_ORDER, SettingsStore, STYLE_ORDER, type ModeId } from './settings';
 import { downloadBlob, downloadPng, mirrored, sideBySide, timestamp, toPngBlob } from './snapshot';
+import type { ModeControl } from './stream/modeLink';
 import { openRemote, type RemoteSource } from './stream/remoteSource';
 import { DebugPanel, isTouchDevice } from './ui/panel';
 
@@ -105,9 +106,18 @@ async function main(): Promise<void> {
   const streamMode = params.get('source') === 'stream';
   let remote: RemoteSource | null = null;
   if (streamMode) settings.mirror = false;
+  // The iPad's Remove / Grow switch changes the mode here, like G does.
+  const modeControl: ModeControl = {
+    get: () => settings.mode,
+    set: (mode) => {
+      report('status', { text: `${mode} mode, switched on the iPad` });
+      store.set('mode', mode);
+    },
+    onChange: (changed) => store.onChange((_s, key) => key === 'mode' && changed()),
+  };
   say(still ? 'loading image…' : streamMode ? 'waiting for the iPad…' : 'waiting for camera…');
   try {
-    source = still ? await openStill(still) : streamMode ? (remote = await openRemote(say)) : await openCamera(facing);
+    source = still ? await openStill(still) : streamMode ? (remote = await openRemote(say, modeControl)) : await openCamera(facing);
   } catch (err) {
     const denied = err instanceof DOMException && err.name === 'NotAllowedError';
     say(denied ? 'Camera access was blocked. Allow it for this page and reload.' : `Camera error: ${(err as Error).message}`, true);
