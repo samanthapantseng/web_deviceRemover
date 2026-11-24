@@ -62,7 +62,8 @@ Do "iPad: before the first time" below once. Then, each time:
      for example `https://10.21.12.136:8443/stream.html`
    - **Ethernet cable** (the iPad's Wi-Fi off): `https://192.168.77.1:8443/stream.html`
 
-On the iPad, all in reach of the right thumb:
+It starts in Remove, and the first tap once the picture is there makes it fullscreen. On the iPad,
+all in reach of the right thumb:
 
 - **Remove / Grow / Hijack**: swipe up or down anywhere on the right side (or tap a name).
 - **Shutter**: tap for a screenshot. Hold to start recording (it goes on when you let go), tap to stop.

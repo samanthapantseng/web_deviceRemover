@@ -30,7 +30,7 @@ import { Controls } from './controls';
 import { Stamper, StampReader } from './latency';
 import { MODE_CHANNEL, ModeClient, type IpadMode } from './modeLink';
 import { ScreenRecorder } from '../recorder';
-import { keepScreenOn, toggleFullscreen } from './screen';
+import { canFullscreen, enterFullscreen, exitFullscreen, isFullscreen, keepScreenOn } from './screen';
 import { SHOT_CHANNEL, ShotClient } from './shots';
 import { SOUND_CHANNEL, SOUND_CHANNEL_OPTIONS, SoundClient } from './soundLink';
 import { Signal, type SignalMessage } from './signal';
@@ -66,6 +66,29 @@ function savePrefs(): void {
   } catch {
     /* private mode: settings just won't persist */
   }
+}
+
+/**
+ * Every time this page is opened it starts in remove mode. Not when it reloads itself to repair
+ * something: then it goes on in the mode it was in.
+ */
+const KEEP_MODE = 'device-remover.stream.keep-mode';
+let startMode: IpadMode | null = 'remove';
+try {
+  if (sessionStorage.getItem(KEEP_MODE)) startMode = null;
+  sessionStorage.removeItem(KEEP_MODE);
+} catch {
+  /* no storage: remove mode after a repair too */
+}
+
+/** Reload to repair something. */
+function reloadPage(): void {
+  try {
+    sessionStorage.setItem(KEEP_MODE, '1');
+  } catch {
+    /* see above */
+  }
+  location.reload();
 }
 
 const params = new URLSearchParams(location.search);
@@ -268,17 +291,49 @@ addAction('Close', togglePanel);
 // camera, as this one does, so it may well start by itself. If not, a note asks for a tap.
 const sound = new LiveSound(false);
 const soundLink = new SoundClient(sound, () => prefs.mirror);
-const soundHint = el('div', 'hidden', isTouchDevice ? 'tap for sound' : 'click or press any key for sound');
-soundHint.id = 'sound';
-document.body.append(soundHint);
-function updateSound(): void {
-  soundHint.classList.toggle('hidden', modes.mode !== 'hijack' || sound.running);
+/** What a browser only gives for a touch: sound and fullscreen. */
+const tapHint = el('div', 'hidden');
+tapHint.id = 'sound';
+document.body.append(tapHint);
+function updateHint(): void {
+  const wants = [...(fullscreenMissing() ? ['fullscreen'] : []), ...(modes.mode === 'hijack' && !sound.running ? ['sound'] : [])];
+  tapHint.classList.toggle('hidden', !wants.length);
+  if (wants.length) tapHint.textContent = `${isTouchDevice ? 'tap' : 'click'} for ${wants.join(' and ')}`;
 }
 sound.onChange = () => {
   report('status', { text: `sound ${sound.running ? 'on' : 'off'}` });
   soundLink.tell();
-  updateSound();
+  updateHint();
 };
+
+// Fullscreen as soon as the camera and the Mac are connected (the first picture from the Mac).
+// Browsers allow it only from a touch, so it is the first touch from then on; and the next one
+// again, should something else end it. Switched off with the panel's button (or F), it stays off.
+let wantFullscreen = canFullscreen();
+const fullscreenMissing = () => wantFullscreen && framesShown > 0 && !isFullscreen();
+function goFullscreen(): void {
+  if (fullscreenMissing()) enterFullscreen();
+}
+function toggleFullscreen(): void {
+  wantFullscreen = !isFullscreen();
+  if (wantFullscreen) enterFullscreen();
+  else exitFullscreen();
+  updateHint();
+}
+for (const type of ['touchend', 'click'] as const) {
+  // Not from the panel: its Fullscreen button would undo it at once.
+  document.addEventListener(type, (e) => !panel.contains(e.target as Node) && goFullscreen());
+}
+for (const type of ['fullscreenchange', 'webkitfullscreenchange']) {
+  document.addEventListener(type, () => {
+    report('status', { text: `fullscreen ${isFullscreen() ? 'on' : 'off'}` });
+    updateHint();
+  });
+}
+// In fullscreen Safari ends it when one drags down from the top of a page: ask it not to take the
+// slider's swipes for that. (Only a request; the touch above is the way back.)
+document.addEventListener('touchmove', (e) => e.cancelable && !panel.contains(e.target as Node) && e.preventDefault(), { passive: false });
+
 for (const type of ['touchend', 'click', 'keydown'] as const) {
   // Also for the swipe that asks for hijack mode, before the Mac has answered.
   document.addEventListener(type, () => (modes.mode === 'hijack' || controls.wanted === 'hijack') && sound.ensure(true));
@@ -297,11 +352,17 @@ const controls = new Controls({
 });
 document.body.append(controls.root, controls.timer);
 modes.onChange = () => {
+  // The first word from the Mac after this page was opened.
+  if (modes.mode !== null && startMode !== null) {
+    const start = startMode;
+    startMode = null;
+    if (modes.mode !== start && modes.request(start)) return; // its answer comes here
+  }
   controls.setMode(modes.mode);
   if (modes.mode === 'hijack') sound.ensure();
-  updateSound();
+  updateHint();
 };
-modes.onChange();
+controls.setMode(null);
 
 function askMode(mode: IpadMode): boolean {
   if (modes.request(mode)) return true;
@@ -482,7 +543,7 @@ async function onMessage(msg: SignalMessage): Promise<void> {
     lastMacRestartAt = now;
     if (macRestarts >= 3) {
       report('status', { text: `the Mac got no frames ${macRestarts} times in a row, reloading this page` });
-      location.reload();
+      reloadPage();
       return;
     }
     retry(msg.reason);
@@ -535,7 +596,10 @@ function onFrame(): void {
   if (out.srcObject && out.srcObject === linkStream) {
     const now = performance.now();
     lastFrameAt = now;
-    framesShown++;
+    if (!framesShown++) {
+      goFullscreen(); // refused without a touch in the last seconds
+      setTimeout(updateHint, 300);
+    }
     // Live again (a new connection, or the same one after a stall): drop the held picture.
     releasePicture();
     if (!framesThisLink++) {
@@ -669,7 +733,7 @@ async function restartCamera(reason = 'the camera stopped delivering frames'): P
   if (restartingCamera || stopped || !local) return;
   if (cameraRestarts >= 3) {
     report('status', { text: `${reason}; three camera restarts did not help, reloading the page` });
-    location.reload();
+    reloadPage();
     return;
   }
   restartingCamera = true;
@@ -682,7 +746,7 @@ async function restartCamera(reason = 'the camera stopped delivering frames'): P
     await attachCamera();
   } catch (err) {
     console.error('[stream] could not restart the camera, reloading', err);
-    setTimeout(() => location.reload(), 1000);
+    setTimeout(reloadPage, 1000);
   } finally {
     restartingCamera = false;
   }
@@ -731,7 +795,7 @@ async function flipCamera(): Promise<void> {
     await new Promise((r) => setTimeout(r, FLIP_WAIT_MS));
   } catch (err) {
     console.error('[stream] could not switch the camera, reloading', err);
-    setTimeout(() => location.reload(), 1000);
+    setTimeout(reloadPage, 1000);
   } finally {
     restartingCamera = false;
     dip.classList.remove('on');
@@ -826,10 +890,11 @@ async function main(): Promise<void> {
         running: sound.running,
         key: sound.focusKey,
         levels: sound.engine?.levels() ?? null,
-        hint: !soundHint.classList.contains('hidden'),
+        hint: tapHint.classList.contains('hidden') ? '' : tapHint.textContent,
         slowestMs: Conversation.slowestMs,
       }),
       engine: () => sound.engine,
+      fullscreen: () => isFullscreen(),
       camera: () => {
         const ts = (camTrack as (MediaStreamTrack & { stats?: { deliveredFrames: number; totalFrames: number } }) | null)?.stats;
         return {

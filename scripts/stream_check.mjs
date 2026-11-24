@@ -274,7 +274,26 @@ try {
     const silent = () => !window.streamPage || window.streamPage.sound().key === '';
     t = Date.now();
     await ipad.reload({ waitUntil: 'domcontentloaded' });
-    rows2.push({ interruption: 'iPad page reloaded', 'in focus again after ms': await until(ipad, inFocus, undefined, t) });
+    // Opened anew, the iPad page puts the Mac into remove mode. Then Hijack again.
+    const toRemove = async (since) => {
+      await until(ipad, () => window.streamPage?.mode() === 'remove', undefined, since, 30_000);
+      await until(mac, () => window.deviceRemover?.store.value.mode === 'remove', undefined, since, 30_000);
+      const ms = Date.now() - since;
+      await sleep(500);
+      const t1 = Date.now();
+      await tapMode('hijack');
+      return { 'in remove mode after ms': ms, 'in focus after Hijack ms': await until(ipad, inFocus, undefined, t1, 20_000) };
+    };
+    rows2.push({ interruption: 'iPad page reloaded (by hand)', ...(await toRemove(t)) });
+    await sleep(3000);
+
+    // The iPad page reloads itself to repair something: it goes on as it was.
+    await ipad.evaluate(() => sessionStorage.setItem('device-remover.stream.keep-mode', '1'));
+    t = Date.now();
+    await ipad.reload({ waitUntil: 'domcontentloaded' });
+    rows2.push({ interruption: 'iPad page reloaded itself', 'in focus again after ms': await until(ipad, inFocus, undefined, t) });
+    const kept = await mac.evaluate(() => window.deviceRemover.store.value.mode);
+    if (kept !== 'hijack') problems.push(`after the iPad page reloaded itself the mode was ${kept}, not hijack`);
     await sleep(3000);
 
     let c0 = await ipad.evaluate(() => window.streamPage.connections());
@@ -288,8 +307,8 @@ try {
     t = Date.now();
     await mac.reload({ waitUntil: 'domcontentloaded' });
     const gone = await until(ipad, silent, undefined, t, 8000).catch(() => null);
-    rows2.push({ interruption: 'Mac page reloaded (models reload)', 'silent after ms': gone ?? 'never', 'in focus again after ms': await until(ipad, inFocus, undefined, t) });
     await until(mac, () => !!window.deviceRemover);
+    rows2.push({ interruption: 'Mac page reloaded (models reload)', 'silent after ms': gone ?? 'never', ...(await toRemove(t)) });
     await sleep(3000);
 
     // A phone nobody sees any more: the state "nobody" has to arrive.

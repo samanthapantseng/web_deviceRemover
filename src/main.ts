@@ -99,6 +99,8 @@ async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const modeParam = params.get('mode') as ModeId | null;
   if (modeParam && MODE_ORDER.includes(modeParam)) settings.mode = modeParam;
+  // With the iPad, it always starts in remove mode, whatever it was in last.
+  else if (streamMode) settings.mode = 'remove';
   panel.refresh();
   const fillParam = params.get('fill') as (typeof FILL_ORDER)[number] | null;
   if (fillParam && FILL_ORDER.includes(fillParam)) settings.fill = fillParam;
